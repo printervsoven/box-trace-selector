@@ -1224,51 +1224,32 @@ FIELD_LATEX = {
 
 
 def box_definition_latex_chunks():
-    """Return the direct single-Box definition encoded by this calculator."""
+    """Return main.pdf (2.1),(2.2),(2.6), suppressing spectator indices."""
     return (
         r"\begin{aligned}"
-        r"\Box_X={}&\mathcal H^{AB}\partial_A\partial_B"
-        r"+\mathcal A_X^C\partial_C+\mathcal B_X,\\"
-        r"\mathcal A_X^C={}&h^C\mathbf 1_X"
-        r"+u^C{}_{pq}G_X^{pq}"
-        r"+\bar u^C{}_{\bar p\bar q}\bar G_X^{\bar p\bar q},\\"
-        r"\mathcal B_X={}&b_{pq}G_X^{pq}"
-        r"+\bar b_{\bar p\bar q}\bar G_X^{\bar p\bar q}"
-        r"+b_{pq,rs}G_X^{pq}G_X^{rs}"
-        r"+\bar b_{\bar p\bar q,\bar r\bar s}"
-        r"\bar G_X^{\bar p\bar q}\bar G_X^{\bar r\bar s}"
-        r"+b_{pq,\bar r\bar s}G_X^{pq}\bar G_X^{\bar r\bar s}."
-        r"\end{aligned}",
+        r"\Box T&:=\left(\Delta-\bar\Delta\right)T."
+        r"\end{aligned}\tag{2.6}",
         r"\begin{aligned}"
-        r"h^C={}&\mathcal H^{MN}\Gamma_{MN}{}^C,\\"
-        r"u^C{}_{pq}={}&\mathcal H^{CM}\Phi_{Mpq}-\Gamma^C{}_{pq},\\"
-        r"\bar u^C{}_{\bar p\bar q}={}&"
-        r"\mathcal H^{CM}\bar\Phi_{M\bar p\bar q}"
-        r"+\Gamma^C{}_{\bar p\bar q},\\"
-        r"b_{pq}={}&\mathfrak R_{[pq]}"
-        r"+\frac12\mathcal H^{MN}\partial_M\Phi_{Npq}"
-        r"+\frac12\mathcal H^{MN}\Gamma_{MN}{}^C\Phi_{Cpq},\\"
-        r"\bar b_{\bar p\bar q}={}&-\mathfrak R_{[\bar p\bar q]}"
-        r"+\frac12\mathcal H^{MN}\partial_M\bar\Phi_{N\bar p\bar q}"
-        r"+\frac12\mathcal H^{MN}\Gamma_{MN}{}^C"
-        r"\bar\Phi_{C\bar p\bar q}."
-        r"\end{aligned}",
+        r"\Delta T={}&\mathcal D_q\mathcal D^qT\\"
+        r"&+\left(\mathfrak R_{[q_1q_2]}"
+        r"-\Gamma^B{}_{q_1q_2}\mathcal D_B\right)"
+        r"G^{q_1q_2}T\\"
+        r"&+\frac14\Gamma_{Bq_1q_2}\Gamma^B{}_{q_3q_4}"
+        r"G^{q_1q_2}G^{q_3q_4}T\\"
+        r"&+\frac12\mathfrak R_{\bar q_1\bar q_2q_3q_4}"
+        r"\bar G^{\bar q_1\bar q_2}G^{q_3q_4}T."
+        r"\end{aligned}\tag{2.1}",
         r"\begin{aligned}"
-        r"b_{pq,rs}={}&\frac14\mathcal H^{MN}\Phi_{Mpq}\Phi_{Nrs}"
-        r"-\frac12\Gamma^C{}_{pq}\Phi_{Crs}"
-        r"+\frac14\Gamma_{Apq}\Gamma^A{}_{rs},\\"
-        r"\bar b_{\bar p\bar q,\bar r\bar s}={}&"
-        r"\frac14\mathcal H^{MN}\bar\Phi_{M\bar p\bar q}"
-        r"\bar\Phi_{N\bar r\bar s}"
-        r"+\frac12\Gamma^C{}_{\bar p\bar q}\bar\Phi_{C\bar r\bar s}"
-        r"-\frac14\Gamma_{A\bar p\bar q}\Gamma^A{}_{\bar r\bar s},\\"
-        r"b_{pq,\bar r\bar s}={}&"
-        r"\frac12\mathcal H^{MN}\Phi_{Mpq}\bar\Phi_{N\bar r\bar s}"
-        r"-\frac12\Gamma^C{}_{pq}\bar\Phi_{C\bar r\bar s}"
-        r"+\frac12\Gamma^C{}_{\bar r\bar s}\Phi_{Cpq}"
-        r"+\frac12\mathfrak R_{\bar r\bar s pq}"
-        r"-\frac12\mathfrak R_{pq\bar r\bar s}."
-        r"\end{aligned}",
+        r"\bar\Delta T={}&\mathcal D_{\bar q}\mathcal D^{\bar q}T\\"
+        r"&+\left(\mathfrak R_{[\bar q_1\bar q_2]}"
+        r"-\Gamma^B{}_{\bar q_1\bar q_2}\mathcal D_B\right)"
+        r"\bar G^{\bar q_1\bar q_2}T\\"
+        r"&+\frac14\Gamma_{B\bar q_1\bar q_2}"
+        r"\Gamma^B{}_{\bar q_3\bar q_4}"
+        r"\bar G^{\bar q_1\bar q_2}\bar G^{\bar q_3\bar q_4}T\\"
+        r"&+\frac12\mathfrak R_{q_1q_2\bar q_3\bar q_4}"
+        r"G^{q_1q_2}\bar G^{\bar q_3\bar q_4}T."
+        r"\end{aligned}\tag{2.2}",
     )
 
 
@@ -1281,95 +1262,150 @@ def _show_latex_or_text(chunks):
 
 
 def show_box_definition():
-    """Display the direct Box definition and all eight coefficient blocks."""
+    """Display only the defining equations and notation of main.pdf."""
     chunks = box_definition_latex_chunks()
     _show_latex_or_text(chunks)
     return chunks
 
 
-def _generator_definition_latex(field, sector):
-    label = FIELD_LATEX[field.name]
+FIELD_COMPONENT_SUFFIX = {
+    "T": r"^{\alpha}{}_{\bar\beta}",
+    "phi": "",
+    "BLL": r"^{\alpha_1\alpha_2}",
+    "BRR": r"{}_{\bar\beta_1\bar\beta_2}",
+    "UL": r"^{\alpha}",
+    "UR": r"{}_{\bar\beta}",
+    "ULLR": r"^{\alpha_1\alpha_2}{}_{\bar\beta}",
+    "ULRR": r"^{\alpha}{}_{\bar\beta_1\bar\beta_2}",
+}
+
+
+def _replace_spinor_index(field, sector, slot):
+    """Return the actual field component with one spinor index replaced."""
+    name = field.name
     if sector == "L":
-        if field.a == 0:
-            return rf"G_{{{label}}}^{{pq}}=0"
-        if field.a == 1:
-            return rf"G_{{{label}}}^{{pq}}=\frac12\gamma^{{pq}}"
-        return (
-            rf"G_{{{label}}}^{{pq}}="
-            rf"\frac12\sum_{{r=1}}^{{{field.a}}}\gamma_{{(r)}}^{{pq}}"
-        )
+        if name in {"T", "UL", "ULRR"}:
+            return {
+                "T": r"T^{\rho}{}_{\bar\beta}",
+                "UL": r"U_L^{\rho}",
+                "ULRR": r"U_{LRR}^{\rho}{}_{\bar\beta_1\bar\beta_2}",
+            }[name]
+        if name in {"BLL", "ULLR"}:
+            suffix = r"{}_{\bar\beta}" if name == "ULLR" else ""
+            family = "B_{LL}" if name == "BLL" else "U_{LLR}"
+            indices = r"\rho\alpha_2" if slot == 1 else r"\alpha_1\rho"
+            return rf"{family}^{{{indices}}}{suffix}"
     if sector == "R":
-        if field.b == 0:
-            return rf"\bar G_{{{label}}}^{{\bar p\bar q}}=0"
-        if field.b == 1:
-            return (
-                rf"\bar G_{{{label}}}^{{\bar p\bar q}}="
-                rf"-\frac12\left(\bar\gamma^{{\bar p\bar q}}\right)^{{\mathsf T}}"
+        if name in {"T", "UR", "ULLR"}:
+            return {
+                "T": r"T^{\alpha}{}_{\bar\rho}",
+                "UR": r"U_{R\,\bar\rho}",
+                "ULLR": r"U_{LLR}^{\alpha_1\alpha_2}{}_{\bar\rho}",
+            }[name]
+        if name in {"BRR", "ULRR"}:
+            prefix = r"U_{LRR}^{\alpha}" if name == "ULRR" else r"B_{RR}"
+            indices = (
+                r"\bar\rho\bar\beta_2"
+                if slot == 1
+                else r"\bar\beta_1\bar\rho"
             )
-        return (
-            rf"\bar G_{{{label}}}^{{\bar p\bar q}}="
-            rf"-\frac12\sum_{{s=1}}^{{{field.b}}}"
-            rf"\left(\bar\gamma_{{(s)}}^{{\bar p\bar q}}\right)^{{\mathsf T}}"
-        )
+            return rf"{prefix}{{}}_{{{indices}}}"
+    raise ValueError(
+        f"No {sector}-sector spinor slot {slot} for field {field.name}"
+    )
+
+
+def _generator_action_latex(field, sector):
+    """Specialize main.pdf (2.3),(2.4) without slot shorthand."""
+    suffix = FIELD_COMPONENT_SUFFIX[field.name]
+    if sector == "L":
+        lhs = rf"\left(G^{{q_1q_2}}{FIELD_LATEX[field.name]}\right)"
+        if field.a == 0:
+            return lhs + "=0"
+        lhs += suffix
+        pieces = []
+        for slot in range(1, field.a + 1):
+            target = _replace_spinor_index(field, "L", slot)
+            alpha = rf"\alpha_{slot}" if field.a > 1 else r"\alpha"
+            pieces.append(
+                rf"\frac12(\gamma^{{q_1q_2}})^{{{alpha}}}{{}}_{{\rho}}{target}"
+            )
+        return lhs + "=" + "+".join(pieces)
+    if sector == "R":
+        lhs = rf"\left(\bar G^{{\bar q_1\bar q_2}}{FIELD_LATEX[field.name]}\right)"
+        if field.b == 0:
+            return lhs + "=0"
+        lhs += suffix
+        pieces = []
+        for slot in range(1, field.b + 1):
+            target = _replace_spinor_index(field, "R", slot)
+            beta = rf"\bar\beta_{slot}" if field.b > 1 else r"\bar\beta"
+            pieces.append(
+                rf"-\frac12{target}"
+                rf"(\bar\gamma^{{\bar q_1\bar q_2}})^{{\bar\rho}}{{}}_{{{beta}}}"
+            )
+        return lhs + "=" + "".join(pieces)
     raise ValueError(f"Unknown generator sector: {sector}")
 
 
 def field_box_latex(field):
-    """Specialize the direct Box to one raw (a,b) tensor-spinor field."""
+    """Specialize main.pdf (2.1), (2.2), and (2.6) to one raw field."""
     field = resolve_field(field)
     label = FIELD_LATEX[field.name]
-    identity = rf"\mathbf 1_{{{label}}}"
-    left = rf"G_{{{label}}}"
-    right = rf"\bar G_{{{label}}}"
-
-    first_order = [rf"h^C{identity}"]
+    # Preserve main.pdf's order exactly: all four Delta terms, followed by
+    # minus all four barred-Delta terms.
+    terms = [rf"\mathcal D_q\mathcal D^q{label}"]
     if field.a:
-        first_order.append(rf"u^C{{}}_{{pq}}{left}^{{pq}}")
-    if field.b:
-        first_order.append(
-            rf"\bar u^C{{}}_{{\bar p\bar q}}{right}^{{\bar p\bar q}}"
-        )
-
-    zeroth_order = []
-    if field.a:
-        zeroth_order.extend(
+        terms.extend(
             (
-                rf"b_{{pq}}{left}^{{pq}}",
-                rf"b_{{pq,rs}}{left}^{{pq}}{left}^{{rs}}",
-            )
-        )
-    if field.b:
-        zeroth_order.extend(
-            (
-                rf"\bar b_{{\bar p\bar q}}{right}^{{\bar p\bar q}}",
-                rf"\bar b_{{\bar p\bar q,\bar r\bar s}}"
-                rf"{right}^{{\bar p\bar q}}{right}^{{\bar r\bar s}}",
+                rf"{{}}+\left(\mathfrak R_{{[q_1q_2]}}"
+                rf"-\Gamma^B{{}}_{{q_1q_2}}\mathcal D_B\right)"
+                rf"G^{{q_1q_2}}{label}",
+                rf"{{}}+\frac14\Gamma_{{Bq_1q_2}}\Gamma^B{{}}_{{q_3q_4}}"
+                rf"G^{{q_1q_2}}G^{{q_3q_4}}{label}",
             )
         )
     if field.a and field.b:
-        zeroth_order.append(
-            rf"b_{{pq,\bar r\bar s}}{left}^{{pq}}{right}^{{\bar r\bar s}}"
+        terms.append(
+            rf"{{}}+\frac12\mathfrak R_{{\bar q_1\bar q_2q_3q_4}}"
+            rf"\bar G^{{\bar q_1\bar q_2}}G^{{q_3q_4}}{label}"
         )
-
-    box_rhs = (
-        r"\mathcal H^{AB}\partial_A\partial_B"
-        + r"+\left[" + "+".join(first_order) + r"\right]\partial_C"
+    terms.append(
+        rf"{{}}-\mathcal D_{{\bar q}}\mathcal D^{{\bar q}}{label}"
     )
-    if zeroth_order:
-        box_rhs += "+" + "+".join(zeroth_order)
+    if field.b:
+        terms.extend(
+            (
+                rf"{{}}-\left(\mathfrak R_{{[\bar q_1\bar q_2]}}"
+                rf"-\Gamma^B{{}}_{{\bar q_1\bar q_2}}\mathcal D_B\right)"
+                rf"\bar G^{{\bar q_1\bar q_2}}{label}",
+                rf"{{}}-\frac14\Gamma_{{B\bar q_1\bar q_2}}"
+                rf"\Gamma^B{{}}_{{\bar q_3\bar q_4}}"
+                rf"\bar G^{{\bar q_1\bar q_2}}"
+                rf"\bar G^{{\bar q_3\bar q_4}}{label}",
+            )
+        )
+    if field.a and field.b:
+        terms.append(
+            rf"{{}}-\frac12\mathfrak R_{{q_1q_2\bar q_3\bar q_4}}"
+            rf"G^{{q_1q_2}}\bar G^{{\bar q_3\bar q_4}}{label}"
+        )
     representation = (
-        rf"\Psi_{{{label}}}\in S^{{\otimes {field.a}}}"
+        rf"{label}\in S^{{\otimes {field.a}}}"
         rf"\otimes(\bar S^*)^{{\otimes {field.b}}}"
     )
+    box_lines = [rf"\Box {label}={{}}&{terms[0]}"]
+    box_lines.extend(rf"&\quad{term}" for term in terms[1:])
     return (
         r"\begin{aligned}"
         + representation
-        + r",\qquad "
-        + _generator_definition_latex(field, "L")
-        + r",\qquad "
-        + _generator_definition_latex(field, "R")
         + r",\\"
-        + rf"\Box_{{{label}}}={box_rhs}."
+        + _generator_action_latex(field, "L")
+        + r",\qquad "
+        + _generator_action_latex(field, "R")
+        + r",\\"
+        + r"\\".join(box_lines)
+        + r"."
         + r"\end{aligned}"
     )
 

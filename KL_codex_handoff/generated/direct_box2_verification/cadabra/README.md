@@ -24,8 +24,9 @@ authentication enabled.
 - `full_trace_calculator.cdb` — independent full expansion engine and public
   Box-display, field-variable, trace, and cancellation functions.
 - `full_trace_verification.ipynb` — interactive calculator. Its default cells
-  display the direct Box definition, all eight field-specialized Boxes, all
-  1,994 weighted field rows, and all 404 cancellation identities.
+  start with main.pdf equations (2.1), (2.2), and (2.6), display all eight
+  field-specialized Boxes, all 1,994 weighted field rows, and all 404
+  cancellation identities.
 - `verify_full_trace.cdb` — headless acceptance suite, including an independent
   Cadabra gamma-algebra comparison and a perturbed-weight negative control.
 - `box2_verification.ipynb` and `verify_box2_smoke.cdb` — the earlier compact
@@ -92,15 +93,18 @@ coefficient-by-coefficient with the standalone recursion used by the engine.
 
 ## What “full expansion” means
 
-The engine starts from the single-Box coefficient blocks, composes ordered
-differential operators with the complete Leibniz rule, expands total
-generators into raw left/right spinor slots, applies the right-sector reversal
-and `-1/2` normalization (displayed as the transpose action on each
-`bar S*` slot), evaluates every chiral Clifford trace, and absorbs
-all local metrics into explicit upper/lower Einstein dummy indices. Final rows
-contain only the paper-level `H`, `Gamma`, `Phi`, barred `Phi`, curvature and
-ordinary-partial notation; no covariant-D, total-generator, gamma-trace, eta,
-or moment shorthand remains.
+The displayed calculation starts directly from main.pdf equations (2.1),
+(2.2), and (2.6). Total-generator actions are shown component by component as
+the field specialisations of equations (2.3) and (2.4), without introducing
+`A_X`, `B_X`, `h`, `u`, `b`, or slot-labelled gamma shorthand. For the actual
+ordinary-partial expansion the engine privately normal-orders those same
+main.pdf terms, composes the differential operators with the complete Leibniz
+rule, expands total generators into raw left/right spinor slots, applies the
+right-sector reversal and `-1/2` normalization, evaluates every chiral
+Clifford trace, and absorbs all local metrics into explicit upper/lower
+Einstein dummy indices. Final rows contain only the paper-level `H`, `Gamma`,
+`Phi`, barred `Phi`, curvature and ordinary-partial notation; no covariant-D,
+total-generator, gamma-trace, eta, or moment shorthand remains.
 
 Cadabra receives every weighted final tensor expression before `collect_terms`
 is called. The notebook separately displays a `K0001...K0404` audit row number

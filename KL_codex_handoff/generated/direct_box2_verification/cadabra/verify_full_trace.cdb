@@ -167,17 +167,39 @@ print("PASS every n=1/n=2 single-field final-term inventory")
 
 box_chunks = box_definition_latex_chunks()
 assert len(box_chunks) == 3
-assert r"\Box_X" in box_chunks[0]
-assert all(symbol in "".join(box_chunks) for symbol in ("h^C", "u^C", "b_{pq}", "b_{pq,rs}"))
+main_box_source = "".join(box_chunks)
+assert r"\Box T" in box_chunks[0]
+assert r"\left(\Delta-\bar\Delta\right)T" in box_chunks[0]
+assert r"\tag{2.6}" in box_chunks[0]
+assert r"\Delta T" in box_chunks[1] and r"\tag{2.1}" in box_chunks[1]
+assert r"\bar\Delta T" in box_chunks[2] and r"\tag{2.2}" in box_chunks[2]
+for forbidden in (r"\mathcal A", r"\mathcal B", "h^C", "u^C", "b_{pq}"):
+    assert forbidden not in main_box_source
 field_boxes = tuple(field_box_latex(field) for field, _weight in normalize_combination(EIGHT_FIELD_COMBINATION))
 assert len(field_boxes) == 8
-assert r"G_{\phi}^{pq}=0" in field_boxes[1]
-assert r"\bar G_{\phi}^{\bar p\bar q}=0" in field_boxes[1]
-assert r"\bar G_{B_{LL}}^{\bar p\bar q}=0" in field_boxes[2]
-assert r"G_{B_{RR}}^{pq}=0" in field_boxes[3]
-assert r"\left(\bar\gamma^{\bar p\bar q}\right)^{\mathsf T}" in field_boxes[0]
-assert r"\left(\bar\gamma_{(s)}^{\bar p\bar q}\right)^{\mathsf T}" in field_boxes[7]
-print("PASS direct Box definition and all eight field-specialized Boxes")
+assert r"\left(G^{q_1q_2}\phi\right)=0" in field_boxes[1]
+assert r"\left(\bar G^{\bar q_1\bar q_2}\phi\right)=0" in field_boxes[1]
+assert r"\left(\bar G^{\bar q_1\bar q_2}B_{LL}\right)=0" in field_boxes[2]
+assert r"\left(G^{q_1q_2}B_{RR}\right)=0" in field_boxes[3]
+assert (
+    r"\left(\bar G^{\bar q_1\bar q_2}T\right)^{\alpha}{}_{\bar\beta}="
+    r"-\frac12T^{\alpha}{}_{\bar\rho}"
+    in field_boxes[0]
+)
+assert (
+    r"(\gamma^{q_1q_2})^{\alpha}{}_{\rho}T^{\rho}{}_{\bar\beta}"
+    in field_boxes[0]
+)
+assert r"U_{LRR}^{\alpha}{}_{\bar\rho\bar\beta_2}" in field_boxes[7]
+assert r"U_{LRR}^{\alpha}{}_{\bar\beta_1\bar\rho}" in field_boxes[7]
+assert r"\mathfrak R" not in field_boxes[1]
+for field_box in field_boxes:
+    for forbidden in (
+        r"\mathcal A", r"\mathcal B", "h^C", "u^C", "b_{pq}",
+        r"\gamma_{(", r"\bar\gamma_{(", r"\mathsf T", r"G_{",
+    ):
+        assert forbidden not in field_box
+print("PASS main.pdf Box equations and all eight shorthand-free specializations")
 
 
 prepared8 = prepare_field_variables(EIGHT_FIELD_COMBINATION, 2, show=False)

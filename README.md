@@ -40,8 +40,10 @@ KL_codex_handoff\generated\direct_box2_verification\cadabra
 
 After the WSL environment is installed, double-click
 `run_cadabra_jupyter.cmd`. It opens `full_trace_verification.ipynb`, whose
-input cell sets `N` and the eight `(field, weight)` pairs. The notebook displays
-the direct Box definition and every field-specialized Box, stores the fully
+input cell sets `N` and the eight `(field, weight)` pairs. The notebook starts
+from main.pdf equations (2.1), (2.2), and (2.6), then displays every
+field-specialized Box with the component actions of equations (2.3) and (2.4),
+without introducing `A_X`, `B_X`, `h`, `u`, or `b`. It stores the fully
 expanded weighted traces in `F1` through `F8`, and visibly executes
 `totalTr = F1 + ... + F8` before Cadabra collects the exact residual. The
 `F` variables contain the actual contracted tensor and partial-derivative
