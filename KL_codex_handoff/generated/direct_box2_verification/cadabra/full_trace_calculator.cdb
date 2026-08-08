@@ -41,6 +41,228 @@ D_SPIN = 16
 
 
 @dataclass(frozen=True)
+class TensorBodyFactor:
+    """One editable tensor factor in a displayed main.pdf coefficient body.
+
+    ``slots`` contains semantic names supplied by the surrounding operator
+    term (for example ``coordinate``, ``pair1``, ``pair2``, ``left_pair`` or
+    ``right_pair``).  This makes the object hashable and executable; it is not
+    a LaTeX-only label.
+    """
+
+    kind: str
+    slots: tuple[str, ...]
+
+    def __post_init__(self):
+        object.__setattr__(self, "slots", tuple(self.slots))
+        schemas = {
+            "Ricci": (("pair1",),),
+            "ConnectionUp": (
+                ("coordinate", "pair1"),
+                ("coordinate", "pair2"),
+            ),
+            "ConnectionDown": (
+                ("coordinate", "pair1"),
+                ("coordinate", "pair2"),
+            ),
+            "GammaUp": (
+                ("coordinate", "pair1"),
+                ("coordinate", "pair2"),
+            ),
+            "GammaDown": (
+                ("coordinate", "pair1"),
+                ("coordinate", "pair2"),
+            ),
+            "Riemann": (("pair1", "pair2"),),
+            "MixedCurvature": (("left_pair", "right_pair"),),
+        }
+        if self.kind not in schemas:
+            raise ValueError(f"Unsupported structural tensor factor: {self.kind}")
+        if self.slots not in schemas[self.kind]:
+            raise ValueError(
+                f"{self.kind} requires semantic slots {schemas[self.kind]!r}; "
+                f"received {self.slots!r}"
+            )
+
+    def latex(self, sector):
+        if sector not in {"delta", "bar_delta"}:
+            raise KeyError("sector must be 'delta' or 'bar_delta'")
+        barred = sector == "bar_delta"
+        pair1 = r"\bar q_1\bar q_2" if barred else r"q_1q_2"
+        pair2 = r"\bar q_3\bar q_4" if barred else r"q_3q_4"
+        if self.kind == "Ricci":
+            return rf"\mathfrak R_{{[{pair1}]}}"
+        if self.kind in {"ConnectionUp", "GammaUp"}:
+            pair = pair2 if self.slots[1] == "pair2" else pair1
+            return rf"\Gamma^B{{}}_{{{pair}}}"
+        if self.kind in {"ConnectionDown", "GammaDown"}:
+            pair = pair2 if self.slots[1] == "pair2" else pair1
+            return rf"\Gamma_{{B{pair}}}"
+        if self.kind == "Riemann":
+            return rf"\mathfrak R_{{{pair1}{pair2}}}"
+        if self.kind == "MixedCurvature":
+            if barred:
+                return r"\mathfrak R_{q_1q_2\bar q_3\bar q_4}"
+            return r"\mathfrak R_{\bar q_1\bar q_2q_3q_4}"
+        raise ValueError(f"Unsupported structural tensor factor: {self.kind}")
+
+
+@dataclass(frozen=True)
+class TensorBodyMonomial:
+    coefficient: Fraction
+    factors: tuple[TensorBodyFactor, ...]
+
+    def __post_init__(self):
+        object.__setattr__(self, "coefficient", Fraction(self.coefficient))
+        object.__setattr__(self, "factors", tuple(self.factors))
+        if any(not isinstance(factor, TensorBodyFactor) for factor in self.factors):
+            raise TypeError("Every body factor must be a TensorBodyFactor")
+
+
+@dataclass(frozen=True)
+class BoxTensorBody:
+    """Executable structural AST for one coefficient tensor in (2.1)/(2.2)."""
+
+    name: str
+    monomials: tuple[TensorBodyMonomial, ...]
+
+    def __post_init__(self):
+        object.__setattr__(self, "monomials", tuple(self.monomials))
+        if not self.name:
+            raise ValueError("A tensor body needs a nonempty name")
+        if not self.monomials:
+            raise ValueError("A tensor body needs at least one monomial")
+        if any(not isinstance(term, TensorBodyMonomial) for term in self.monomials):
+            raise TypeError("Every body monomial must be a TensorBodyMonomial")
+
+    def latex(self, sector):
+        if sector == "bar":
+            sector = "bar_delta"
+        if sector not in {"delta", "bar_delta"}:
+            raise KeyError("sector must be 'delta' or 'bar_delta'")
+        rendered_terms = []
+        for monomial in self.monomials:
+            coefficient = monomial.coefficient
+            numerator, denominator = abs(coefficient.numerator), coefficient.denominator
+            if denominator == 1:
+                scalar = "" if numerator == 1 else str(numerator)
+            else:
+                scalar = rf"\frac{{{numerator}}}{{{denominator}}}"
+            product_latex = "".join(
+                factor.latex(sector) for factor in monomial.factors
+            )
+            rendered_terms.append((coefficient, scalar + product_latex))
+        pieces = []
+        for index, (coefficient, rendered) in enumerate(rendered_terms):
+            if index == 0:
+                pieces.append(("-" if coefficient < 0 else "") + rendered)
+            else:
+                pieces.append(("-" if coefficient < 0 else "+") + rendered)
+        combined = "".join(pieces)
+        return rf"\left({combined}\right)" if len(pieces) > 1 else combined
+
+
+def _single_body(name, factors):
+    return BoxTensorBody(
+        name=name,
+        monomials=(TensorBodyMonomial(Fraction(1), tuple(factors)),),
+    )
+
+
+def validate_tensor_body_contract(body, term_name):
+    """Fail closed on missing/repeated pair slots or a free coordinate slot."""
+    if not isinstance(body, BoxTensorBody):
+        raise TypeError("body must be a BoxTensorBody")
+    contracts = {
+        "ricci": ({"pair1": 1}, set()),
+        "connection": ({"coordinate": 1, "pair1": 1}, set()),
+        "generator_square": ({"pair1": 1, "pair2": 1}, {"coordinate"}),
+        "mixed_curvature": ({"left_pair": 1, "right_pair": 1}, set()),
+    }
+    if term_name not in contracts:
+        raise KeyError(f"Unknown structural tensor term: {term_name}")
+    required, optional = contracts[term_name]
+    allowed = set(required) | optional
+    for monomial in body.monomials:
+        counts = defaultdict(int)
+        for factor in monomial.factors:
+            for slot in factor.slots:
+                counts[slot] += 1
+        unknown = set(counts) - allowed
+        if unknown:
+            raise ValueError(
+                f"Body {body.name!r} has unsupported {term_name} slot(s): "
+                + ", ".join(sorted(unknown))
+            )
+        for slot, expected in required.items():
+            if counts[slot] != expected:
+                raise ValueError(
+                    f"Body {body.name!r} must contain {slot!r} exactly "
+                    f"{expected} time(s), found {counts[slot]}"
+                )
+        if term_name == "connection":
+            if (
+                len(monomial.factors) != 1
+                or monomial.factors[0].kind not in {"GammaUp", "ConnectionUp"}
+            ):
+                raise ValueError(
+                    "The connection body is contracted with the fixed "
+                    "down-index D_B and therefore requires exactly one GammaUp"
+                )
+        if term_name == "generator_square":
+            coordinate_count = counts["coordinate"]
+            if coordinate_count not in {0, 2}:
+                raise ValueError(
+                    f"Body {body.name!r} leaves an invalid/free coordinate "
+                    f"contraction ({coordinate_count} occurrences)"
+                )
+            if coordinate_count == 2:
+                coordinate_kinds = sorted(
+                    factor.kind
+                    for factor in monomial.factors
+                    if "coordinate" in factor.slots
+                )
+                normalised_kinds = sorted(
+                    {
+                        "ConnectionDown": "GammaDown",
+                        "ConnectionUp": "GammaUp",
+                    }.get(kind, kind)
+                    for kind in coordinate_kinds
+                )
+                if normalised_kinds != ["GammaDown", "GammaUp"]:
+                    raise ValueError(
+                        "A two-coordinate generator-square body must contract "
+                        "one GammaDown with one GammaUp"
+                    )
+    return body
+
+
+MAIN_RICCI_BODY = _single_body(
+    "main Ricci",
+    (TensorBodyFactor("Ricci", ("pair1",)),),
+)
+MAIN_CONNECTION_BODY = _single_body(
+    "main connection",
+    (TensorBodyFactor("GammaUp", ("coordinate", "pair1")),),
+)
+MAIN_GENERATOR_SQUARE_BODY = _single_body(
+    "main connection square",
+    (
+        TensorBodyFactor("GammaDown", ("coordinate", "pair1")),
+        TensorBodyFactor("GammaUp", ("coordinate", "pair2")),
+    ),
+)
+MAIN_MIXED_CURVATURE_BODY = _single_body(
+    "main mixed curvature",
+    (TensorBodyFactor("MixedCurvature", ("left_pair", "right_pair")),),
+)
+RIEMANN_GENERATOR_SQUARE_BODY = _single_body(
+    "Riemann replacement",
+    (TensorBodyFactor("Riemann", ("pair1", "pair2")),),
+)
+
+
+@dataclass(frozen=True)
 class DeltaDefinition:
     """Editable coefficient AST for one of main.pdf (2.1) or (2.2).
 
@@ -57,6 +279,10 @@ class DeltaDefinition:
     connection_derivative_generator: Fraction
     generator_square: Fraction
     mixed_curvature_generators: Fraction
+    ricci_body: BoxTensorBody = MAIN_RICCI_BODY
+    connection_body: BoxTensorBody = MAIN_CONNECTION_BODY
+    generator_square_body: BoxTensorBody = MAIN_GENERATOR_SQUARE_BODY
+    mixed_curvature_body: BoxTensorBody = MAIN_MIXED_CURVATURE_BODY
 
     def __post_init__(self):
         for name in (
@@ -67,6 +293,22 @@ class DeltaDefinition:
             "mixed_curvature_generators",
         ):
             object.__setattr__(self, name, Fraction(getattr(self, name)))
+        for name in (
+            "ricci_body",
+            "connection_body",
+            "generator_square_body",
+            "mixed_curvature_body",
+        ):
+            if not isinstance(getattr(self, name), BoxTensorBody):
+                raise TypeError(f"{name} must be a BoxTensorBody")
+        validate_tensor_body_contract(self.ricci_body, "ricci")
+        validate_tensor_body_contract(self.connection_body, "connection")
+        validate_tensor_body_contract(
+            self.generator_square_body, "generator_square"
+        )
+        validate_tensor_body_contract(
+            self.mixed_curvature_body, "mixed_curvature"
+        )
 
     @classmethod
     def main_pdf(cls):
@@ -129,6 +371,26 @@ class MainBoxDefinition:
         old_delta = getattr(self, selected)
         new_delta = replace(old_delta, **{term: Fraction(coefficient)})
         return replace(self, **{selected: new_delta})
+
+    def with_body(self, sector, term, body):
+        """Return a copy with one executable coefficient-tensor body replaced."""
+        aliases = {"delta": "delta", "bar_delta": "bar_delta", "bar": "bar_delta"}
+        selected = aliases.get(str(sector).strip().lower())
+        if selected is None:
+            raise KeyError("sector must be 'delta' or 'bar_delta'")
+        body_fields = {
+            "ricci": "ricci_body",
+            "connection": "connection_body",
+            "generator_square": "generator_square_body",
+            "mixed_curvature": "mixed_curvature_body",
+        }
+        field_name = body_fields.get(str(term).strip().lower())
+        if field_name is None:
+            raise KeyError(f"Unknown structural Delta term: {term}")
+        if not isinstance(body, BoxTensorBody):
+            raise TypeError("body must be a BoxTensorBody")
+        old_delta = getattr(self, selected)
+        return replace(self, **{selected: replace(old_delta, **{field_name: body})})
 
     def with_box_weights(self, delta=None, bar_delta=None):
         """Return a copy with the coefficients in Box=a Delta+b barDelta changed."""
@@ -426,6 +688,93 @@ def MixLR(left_pair, right_pair):
     return F("MixLR", left_pair, right_pair)
 
 
+def RiemannL(first_pair, second_pair):
+    return F("RiemannL", first_pair, second_pair)
+
+
+def RiemannR(first_pair, second_pair):
+    return F("RiemannR", first_pair, second_pair)
+
+
+def instantiate_tensor_body(body, sector, **slots):
+    """Compile a public BoxTensorBody AST into the exact Polynomial engine."""
+    if not isinstance(body, BoxTensorBody):
+        raise TypeError("body must be a BoxTensorBody")
+    if sector not in {"L", "R"}:
+        raise KeyError("sector must be 'L' or 'R'")
+
+    def factor_value(spec):
+        try:
+            values = tuple(slots[name] for name in spec.slots)
+        except KeyError as error:
+            raise KeyError(
+                f"Body {body.name!r} requires missing semantic slot {error.args[0]!r}"
+            ) from error
+        if spec.kind == "Ricci":
+            return RicL(*values) if sector == "L" else RicR(*values)
+        if spec.kind in {"ConnectionUp", "GammaUp"}:
+            return GammaLUp(*values) if sector == "L" else GammaRUp(*values)
+        if spec.kind in {"ConnectionDown", "GammaDown"}:
+            return GammaLDown(*values) if sector == "L" else GammaRDown(*values)
+        if spec.kind == "Riemann":
+            return RiemannL(*values) if sector == "L" else RiemannR(*values)
+        if spec.kind == "MixedCurvature":
+            left_pair, right_pair = values
+            return (
+                MixRL(right_pair, left_pair)
+                if sector == "L"
+                else MixLR(left_pair, right_pair)
+            )
+        raise ValueError(f"Unsupported structural tensor factor: {spec.kind}")
+
+    output = Polynomial()
+    for term in body.monomials:
+        monomial = Polynomial({(): Fraction(1)})
+        for factor in term.factors:
+            monomial = monomial * factor_value(factor)
+        output = output + term.coefficient * monomial
+    return output
+
+
+def section_reduced_tensor_body(
+    box_definition,
+    sector,
+    term_name,
+    body,
+    raw_coefficient,
+    **slots,
+):
+    """Apply the typed structural term and subtract Appendix D.12's body.
+
+    When the user changes a tensor body, the section-identity subtraction must
+    retain the original main.pdf body rather than merely changing a scalar
+    coefficient.  This function keeps those two AST contributions distinct.
+    """
+    box_definition = resolve_box_definition(box_definition)
+    sigma = box_definition.section_identity_scale
+    default_bodies = {
+        "ricci": MAIN_RICCI_BODY,
+        "connection": MAIN_CONNECTION_BODY,
+        "generator_square": MAIN_GENERATOR_SQUARE_BODY,
+        "mixed_curvature": MAIN_MIXED_CURVATURE_BODY,
+    }
+    identity_coefficients = {
+        "ricci": Fraction(-1),
+        "connection": Fraction(1),
+        "generator_square": Fraction(-1, 4),
+        "mixed_curvature": Fraction(-1, 2),
+    }
+    if term_name not in default_bodies:
+        raise KeyError(f"Unknown section-reduced tensor term: {term_name}")
+    return (
+        Fraction(raw_coefficient)
+        * instantiate_tensor_body(body, sector, **slots)
+        + sigma
+        * identity_coefficients[term_name]
+        * instantiate_tensor_body(default_bodies[term_name], sector, **slots)
+    )
+
+
 # These functions derive the normal-ordered coefficients from the executable
 # main.pdf input.  There is no separate h/u/... input: changing the
 # MainBoxDefinition changes the Polynomials produced here and every downstream
@@ -442,35 +791,57 @@ def block_h(coordinate, box_definition):
 
 def block_u(coordinate, pair, box_definition):
     box_definition = resolve_box_definition(box_definition)
-    coefficients = box_definition.literal_box_coefficients
     dummy = fresh.index("m")
     return (
         box_definition.laplacian_h_scale
         * H(coordinate, dummy)
         * Phi(dummy, pair)
-        + coefficients["left_connection"] * GammaLUp(coordinate, pair)
+        + section_reduced_tensor_body(
+            box_definition,
+            "L",
+            "connection",
+            box_definition.delta.connection_body,
+            box_definition.delta_in_box
+            * box_definition.delta.connection_derivative_generator,
+            coordinate=coordinate,
+            pair1=pair,
+        )
     )
 
 
 def block_v(coordinate, pair, box_definition):
     box_definition = resolve_box_definition(box_definition)
-    coefficients = box_definition.literal_box_coefficients
     dummy = fresh.index("m")
     return (
         box_definition.laplacian_h_scale
         * H(coordinate, dummy)
         * BarPhi(dummy, pair)
-        + coefficients["right_connection"] * GammaRUp(coordinate, pair)
+        + section_reduced_tensor_body(
+            box_definition,
+            "R",
+            "connection",
+            box_definition.bar_delta.connection_body,
+            box_definition.bar_delta_in_box
+            * box_definition.bar_delta.connection_derivative_generator,
+            coordinate=coordinate,
+            pair1=pair,
+        )
     )
 
 
 def block_p(pair, box_definition):
     box_definition = resolve_box_definition(box_definition)
-    coefficients = box_definition.literal_box_coefficients
     first, second, upper = fresh.index("m"), fresh.index("n"), fresh.index("c")
     scale = box_definition.laplacian_h_scale
     return (
-        coefficients["left_ricci"] * RicL(pair)
+        section_reduced_tensor_body(
+            box_definition,
+            "L",
+            "ricci",
+            box_definition.delta.ricci_body,
+            box_definition.delta_in_box * box_definition.delta.ricci_generator,
+            pair1=pair,
+        )
         + Fraction(1, 2) * scale
         * H(first, second) * Phi(second, pair).derivative(first)
         + Fraction(1, 2) * scale
@@ -482,11 +853,18 @@ def block_p(pair, box_definition):
 
 def block_q(pair, box_definition):
     box_definition = resolve_box_definition(box_definition)
-    coefficients = box_definition.literal_box_coefficients
     first, second, upper = fresh.index("m"), fresh.index("n"), fresh.index("c")
     scale = box_definition.laplacian_h_scale
     return (
-        coefficients["right_ricci"] * RicR(pair)
+        section_reduced_tensor_body(
+            box_definition,
+            "R",
+            "ricci",
+            box_definition.bar_delta.ricci_body,
+            box_definition.bar_delta_in_box
+            * box_definition.bar_delta.ricci_generator,
+            pair1=pair,
+        )
         + Fraction(1, 2) * scale
         * H(first, second) * BarPhi(second, pair).derivative(first)
         + Fraction(1, 2) * scale
@@ -498,49 +876,121 @@ def block_q(pair, box_definition):
 
 def block_r(first_pair, second_pair, box_definition):
     box_definition = resolve_box_definition(box_definition)
-    coefficients = box_definition.literal_box_coefficients
     first, second = fresh.index("m"), fresh.index("n")
     upper, lower = fresh.index("c"), fresh.index("a")
     return (
         Fraction(1, 4) * box_definition.laplacian_h_scale
         * H(first, second) * Phi(first, first_pair) * Phi(second, second_pair)
-        + Fraction(1, 2) * coefficients["left_connection"]
-        * GammaLUp(upper, first_pair) * Phi(upper, second_pair)
-        + coefficients["left_square"]
-        * GammaLDown(lower, first_pair) * GammaLUp(lower, second_pair)
+        + Fraction(1, 2)
+        * section_reduced_tensor_body(
+            box_definition,
+            "L",
+            "connection",
+            box_definition.delta.connection_body,
+            box_definition.delta_in_box
+            * box_definition.delta.connection_derivative_generator,
+            coordinate=upper,
+            pair1=first_pair,
+        )
+        * Phi(upper, second_pair)
+        + section_reduced_tensor_body(
+            box_definition,
+            "L",
+            "generator_square",
+            box_definition.delta.generator_square_body,
+            box_definition.delta_in_box * box_definition.delta.generator_square,
+            coordinate=lower,
+            pair1=first_pair,
+            pair2=second_pair,
+        )
     )
 
 
 def block_s(first_pair, second_pair, box_definition):
     box_definition = resolve_box_definition(box_definition)
-    coefficients = box_definition.literal_box_coefficients
     first, second = fresh.index("m"), fresh.index("n")
     upper, lower = fresh.index("c"), fresh.index("a")
     return (
         Fraction(1, 4) * box_definition.laplacian_h_scale
         * H(first, second)
         * BarPhi(first, first_pair) * BarPhi(second, second_pair)
-        + Fraction(1, 2) * coefficients["right_connection"]
-        * GammaRUp(upper, first_pair) * BarPhi(upper, second_pair)
-        + coefficients["right_square"]
-        * GammaRDown(lower, first_pair) * GammaRUp(lower, second_pair)
+        + Fraction(1, 2)
+        * section_reduced_tensor_body(
+            box_definition,
+            "R",
+            "connection",
+            box_definition.bar_delta.connection_body,
+            box_definition.bar_delta_in_box
+            * box_definition.bar_delta.connection_derivative_generator,
+            coordinate=upper,
+            pair1=first_pair,
+        )
+        * BarPhi(upper, second_pair)
+        + section_reduced_tensor_body(
+            box_definition,
+            "R",
+            "generator_square",
+            box_definition.bar_delta.generator_square_body,
+            box_definition.bar_delta_in_box
+            * box_definition.bar_delta.generator_square,
+            coordinate=lower,
+            pair1=first_pair,
+            pair2=second_pair,
+        )
     )
 
 
 def block_t(left_pair, right_pair, box_definition):
     box_definition = resolve_box_definition(box_definition)
-    coefficients = box_definition.literal_box_coefficients
     first, second = fresh.index("m"), fresh.index("n")
     left_coordinate, right_coordinate = fresh.index("c"), fresh.index("c")
     return (
         Fraction(1, 2) * box_definition.laplacian_h_scale
         * H(first, second) * Phi(first, left_pair) * BarPhi(second, right_pair)
-        + Fraction(1, 2) * coefficients["left_connection"]
-        * GammaLUp(left_coordinate, left_pair) * BarPhi(left_coordinate, right_pair)
-        + Fraction(1, 2) * coefficients["right_connection"]
-        * GammaRUp(right_coordinate, right_pair) * Phi(right_coordinate, left_pair)
-        + coefficients["mixed_RL"] * MixRL(right_pair, left_pair)
-        + coefficients["mixed_LR"] * MixLR(left_pair, right_pair)
+        + Fraction(1, 2)
+        * section_reduced_tensor_body(
+            box_definition,
+            "L",
+            "connection",
+            box_definition.delta.connection_body,
+            box_definition.delta_in_box
+            * box_definition.delta.connection_derivative_generator,
+            coordinate=left_coordinate,
+            pair1=left_pair,
+        )
+        * BarPhi(left_coordinate, right_pair)
+        + Fraction(1, 2)
+        * section_reduced_tensor_body(
+            box_definition,
+            "R",
+            "connection",
+            box_definition.bar_delta.connection_body,
+            box_definition.bar_delta_in_box
+            * box_definition.bar_delta.connection_derivative_generator,
+            coordinate=right_coordinate,
+            pair1=right_pair,
+        )
+        * Phi(right_coordinate, left_pair)
+        + section_reduced_tensor_body(
+            box_definition,
+            "L",
+            "mixed_curvature",
+            box_definition.delta.mixed_curvature_body,
+            box_definition.delta_in_box
+            * box_definition.delta.mixed_curvature_generators,
+            left_pair=left_pair,
+            right_pair=right_pair,
+        )
+        + section_reduced_tensor_body(
+            box_definition,
+            "R",
+            "mixed_curvature",
+            box_definition.bar_delta.mixed_curvature_body,
+            box_definition.bar_delta_in_box
+            * box_definition.bar_delta.mixed_curvature_generators,
+            left_pair=left_pair,
+            right_pair=right_pair,
+        )
     )
 
 
@@ -998,6 +1448,10 @@ PAIR_FACTOR_SLOTS = {
     ("MixRL", 1): "L",
     ("MixLR", 0): "L",
     ("MixLR", 1): "R",
+    ("RiemannL", 0): "L",
+    ("RiemannL", 1): "L",
+    ("RiemannR", 0): "R",
+    ("RiemannR", 1): "R",
 }
 
 
@@ -1319,6 +1773,11 @@ def contracted_factor_latex(factor, coordinates, contraction_assignment):
             r"\mathfrak R",
             [*pair_slots(factor.indices[0]), *pair_slots(factor.indices[1])],
         )
+    elif kind in {"RiemannL", "RiemannR"}:
+        base = tensor_with_indices_latex(
+            r"\mathfrak R",
+            [*pair_slots(factor.indices[0]), *pair_slots(factor.indices[1])],
+        )
     else:
         raise ValueError(f"Unsupported primitive factor: {kind}")
     derivatives = "".join(
@@ -1532,20 +1991,24 @@ def box_definition_latex_chunks(box_definition=None):
         r"\Delta T",
         (
             (delta.laplacian, r"\mathcal D_q\mathcal D^qT"),
-            (delta.ricci_generator, r"\mathfrak R_{[q_1q_2]}G^{q_1q_2}T"),
+            (
+                delta.ricci_generator,
+                delta.ricci_body.latex("delta") + r"G^{q_1q_2}T",
+            ),
             (
                 delta.connection_derivative_generator,
-                r"\Gamma^B{}_{q_1q_2}\mathcal D_BG^{q_1q_2}T",
+                delta.connection_body.latex("delta")
+                + r"\mathcal D_BG^{q_1q_2}T",
             ),
             (
                 delta.generator_square,
-                r"\Gamma_{Bq_1q_2}\Gamma^B{}_{q_3q_4}"
-                r"G^{q_1q_2}G^{q_3q_4}T",
+                delta.generator_square_body.latex("delta")
+                + r"G^{q_1q_2}G^{q_3q_4}T",
             ),
             (
                 delta.mixed_curvature_generators,
-                r"\mathfrak R_{\bar q_1\bar q_2q_3q_4}"
-                r"\bar G^{\bar q_1\bar q_2}G^{q_3q_4}T",
+                delta.mixed_curvature_body.latex("delta")
+                + r"\bar G^{\bar q_1\bar q_2}G^{q_3q_4}T",
             ),
         ),
     )
@@ -1555,23 +2018,23 @@ def box_definition_latex_chunks(box_definition=None):
             (bar_delta.laplacian, r"\mathcal D_{\bar q}\mathcal D^{\bar q}T"),
             (
                 bar_delta.ricci_generator,
-                r"\mathfrak R_{[\bar q_1\bar q_2]}"
-                r"\bar G^{\bar q_1\bar q_2}T",
+                bar_delta.ricci_body.latex("bar_delta")
+                + r"\bar G^{\bar q_1\bar q_2}T",
             ),
             (
                 bar_delta.connection_derivative_generator,
-                r"\Gamma^B{}_{\bar q_1\bar q_2}\mathcal D_B"
-                r"\bar G^{\bar q_1\bar q_2}T",
+                bar_delta.connection_body.latex("bar_delta")
+                + r"\mathcal D_B\bar G^{\bar q_1\bar q_2}T",
             ),
             (
                 bar_delta.generator_square,
-                r"\Gamma_{B\bar q_1\bar q_2}\Gamma^B{}_{\bar q_3\bar q_4}"
-                r"\bar G^{\bar q_1\bar q_2}\bar G^{\bar q_3\bar q_4}T",
+                bar_delta.generator_square_body.latex("bar_delta")
+                + r"\bar G^{\bar q_1\bar q_2}\bar G^{\bar q_3\bar q_4}T",
             ),
             (
                 bar_delta.mixed_curvature_generators,
-                r"\mathfrak R_{q_1q_2\bar q_3\bar q_4}"
-                r"G^{q_1q_2}\bar G^{\bar q_3\bar q_4}T",
+                bar_delta.mixed_curvature_body.latex("bar_delta")
+                + r"G^{q_1q_2}\bar G^{\bar q_3\bar q_4}T",
             ),
         ),
     )
@@ -1697,17 +2160,18 @@ def field_box_latex(field, box_definition=None):
             (
                 (
                     left_weight * delta.ricci_generator,
-                    rf"\mathfrak R_{{[q_1q_2]}}G^{{q_1q_2}}{label}",
+                    delta.ricci_body.latex("delta")
+                    + rf"G^{{q_1q_2}}{label}",
                 ),
                 (
                     left_weight * delta.connection_derivative_generator,
-                    rf"\Gamma^B{{}}_{{q_1q_2}}\mathcal D_B"
-                    rf"G^{{q_1q_2}}{label}",
+                    delta.connection_body.latex("delta")
+                    + rf"\mathcal D_BG^{{q_1q_2}}{label}",
                 ),
                 (
                     left_weight * delta.generator_square,
-                    rf"\Gamma_{{Bq_1q_2}}\Gamma^B{{}}_{{q_3q_4}}"
-                    rf"G^{{q_1q_2}}G^{{q_3q_4}}{label}",
+                    delta.generator_square_body.latex("delta")
+                    + rf"G^{{q_1q_2}}G^{{q_3q_4}}{label}",
                 ),
             )
         )
@@ -1715,8 +2179,8 @@ def field_box_latex(field, box_definition=None):
         entries.append(
             (
                 left_weight * delta.mixed_curvature_generators,
-                rf"\mathfrak R_{{\bar q_1\bar q_2q_3q_4}}"
-                rf"\bar G^{{\bar q_1\bar q_2}}G^{{q_3q_4}}{label}",
+                delta.mixed_curvature_body.latex("delta")
+                + rf"\bar G^{{\bar q_1\bar q_2}}G^{{q_3q_4}}{label}",
             )
         )
     entries.append(
@@ -1730,20 +2194,19 @@ def field_box_latex(field, box_definition=None):
             (
                 (
                     right_weight * bar_delta.ricci_generator,
-                    rf"\mathfrak R_{{[\bar q_1\bar q_2]}}"
-                    rf"\bar G^{{\bar q_1\bar q_2}}{label}",
+                    bar_delta.ricci_body.latex("bar_delta")
+                    + rf"\bar G^{{\bar q_1\bar q_2}}{label}",
                 ),
                 (
                     right_weight * bar_delta.connection_derivative_generator,
-                    rf"\Gamma^B{{}}_{{\bar q_1\bar q_2}}\mathcal D_B"
-                    rf"\bar G^{{\bar q_1\bar q_2}}{label}",
+                    bar_delta.connection_body.latex("bar_delta")
+                    + rf"\mathcal D_B\bar G^{{\bar q_1\bar q_2}}{label}",
                 ),
                 (
                     right_weight * bar_delta.generator_square,
-                    rf"\Gamma_{{B\bar q_1\bar q_2}}"
-                    rf"\Gamma^B{{}}_{{\bar q_3\bar q_4}}"
-                    rf"\bar G^{{\bar q_1\bar q_2}}"
-                    rf"\bar G^{{\bar q_3\bar q_4}}{label}",
+                    bar_delta.generator_square_body.latex("bar_delta")
+                    + rf"\bar G^{{\bar q_1\bar q_2}}"
+                    + rf"\bar G^{{\bar q_3\bar q_4}}{label}",
                 ),
             )
         )
@@ -1751,8 +2214,8 @@ def field_box_latex(field, box_definition=None):
         entries.append(
             (
                 right_weight * bar_delta.mixed_curvature_generators,
-                rf"\mathfrak R_{{q_1q_2\bar q_3\bar q_4}}"
-                rf"G^{{q_1q_2}}\bar G^{{\bar q_3\bar q_4}}{label}",
+                bar_delta.mixed_curvature_body.latex("bar_delta")
+                + rf"G^{{q_1q_2}}\bar G^{{\bar q_3\bar q_4}}{label}",
             )
         )
     representation = (
@@ -2022,6 +2485,8 @@ _CADABRA_FACTOR_HEAD = {
     "RicR": "Rfrak",
     "MixRL": "Rfrak",
     "MixLR": "Rfrak",
+    "RiemannL": "Rfrak",
+    "RiemannR": "Rfrak",
 }
 
 
@@ -2041,6 +2506,8 @@ _CADABRA_FACTOR_INDEX_SHAPE = {
     "RicR": (None,),
     "MixRL": (None, None),
     "MixLR": (None, None),
+    "RiemannL": (None, None),
+    "RiemannR": (None, None),
 }
 
 
@@ -2418,6 +2885,15 @@ def sum_trace_combination(
 
 
 __all__ = [
+    "TensorBodyFactor",
+    "TensorBodyMonomial",
+    "BoxTensorBody",
+    "MAIN_RICCI_BODY",
+    "MAIN_CONNECTION_BODY",
+    "MAIN_GENERATOR_SQUARE_BODY",
+    "MAIN_MIXED_CURVATURE_BODY",
+    "RIEMANN_GENERATOR_SQUARE_BODY",
+    "validate_tensor_body_contract",
     "DeltaDefinition",
     "MainBoxDefinition",
     "MAIN_PDF_BOX",

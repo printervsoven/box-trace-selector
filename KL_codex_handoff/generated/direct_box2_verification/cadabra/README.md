@@ -24,8 +24,9 @@ authentication enabled.
 - `full_trace_calculator.cdb` — independent full expansion engine and public
   Box-display, field-variable, trace, and cancellation functions.
 - `full_trace_verification.ipynb` — interactive calculator. Its default cells
-  define every coefficient/sign in main.pdf equations (2.1), (2.2), and (2.6)
-  as one editable `BOX_INPUT`, then display all eight field-specialized Boxes,
+  define every coefficient, sign, and coefficient-tensor body in main.pdf
+  equations (2.1), (2.2), and (2.6) as one executable `BOX_INPUT`, then
+  display all eight field-specialized Boxes,
   all 1,994 weighted field rows, and all 404 cancellation identities.
 - `verify_full_trace.cdb` — headless acceptance suite, including an independent
   Cadabra gamma-algebra comparison and a perturbed-weight negative control.
@@ -38,6 +39,59 @@ Open `full_trace_verification.ipynb` with the Cadabra2 kernel. The visible
 workflow starts from an executable input object, not a display-only formula:
 
 ```python
+DELTA_RICCI_BODY_INPUT = BoxTensorBody(
+    name="main Ricci",
+    monomials=(TensorBodyMonomial(1, (
+        TensorBodyFactor("Ricci", ("pair1",)),
+    )),),
+)
+DELTA_CONNECTION_BODY_INPUT = BoxTensorBody(
+    name="main connection",
+    monomials=(TensorBodyMonomial(1, (
+        TensorBodyFactor("GammaUp", ("coordinate", "pair1")),
+    )),),
+)
+DELTA_GENERATOR_SQUARE_BODY_INPUT = BoxTensorBody(
+    name="main connection square",
+    monomials=(TensorBodyMonomial(1, (
+        TensorBodyFactor("GammaDown", ("coordinate", "pair1")),
+        TensorBodyFactor("GammaUp", ("coordinate", "pair2")),
+    )),),
+)
+DELTA_MIXED_CURVATURE_BODY_INPUT = BoxTensorBody(
+    name="main mixed curvature",
+    monomials=(TensorBodyMonomial(1, (
+        TensorBodyFactor("MixedCurvature", ("left_pair", "right_pair")),
+    )),),
+)
+
+# Separate barDelta objects make a one-sector edit unambiguous.
+BAR_DELTA_RICCI_BODY_INPUT = BoxTensorBody(
+    name="main Ricci",
+    monomials=(TensorBodyMonomial(1, (
+        TensorBodyFactor("Ricci", ("pair1",)),
+    )),),
+)
+BAR_DELTA_CONNECTION_BODY_INPUT = BoxTensorBody(
+    name="main connection",
+    monomials=(TensorBodyMonomial(1, (
+        TensorBodyFactor("GammaUp", ("coordinate", "pair1")),
+    )),),
+)
+BAR_DELTA_GENERATOR_SQUARE_BODY_INPUT = BoxTensorBody(
+    name="main connection square",
+    monomials=(TensorBodyMonomial(1, (
+        TensorBodyFactor("GammaDown", ("coordinate", "pair1")),
+        TensorBodyFactor("GammaUp", ("coordinate", "pair2")),
+    )),),
+)
+BAR_DELTA_MIXED_CURVATURE_BODY_INPUT = BoxTensorBody(
+    name="main mixed curvature",
+    monomials=(TensorBodyMonomial(1, (
+        TensorBodyFactor("MixedCurvature", ("left_pair", "right_pair")),
+    )),),
+)
+
 BOX_INPUT = MainBoxDefinition(
     delta=DeltaDefinition(
         laplacian=Fraction(1),
@@ -45,6 +99,10 @@ BOX_INPUT = MainBoxDefinition(
         connection_derivative_generator=Fraction(-1),
         generator_square=Fraction(1, 4),
         mixed_curvature_generators=Fraction(1, 2),
+        ricci_body=DELTA_RICCI_BODY_INPUT,
+        connection_body=DELTA_CONNECTION_BODY_INPUT,
+        generator_square_body=DELTA_GENERATOR_SQUARE_BODY_INPUT,
+        mixed_curvature_body=DELTA_MIXED_CURVATURE_BODY_INPUT,
     ),
     bar_delta=DeltaDefinition(
         laplacian=Fraction(1),
@@ -52,6 +110,10 @@ BOX_INPUT = MainBoxDefinition(
         connection_derivative_generator=Fraction(-1),
         generator_square=Fraction(1, 4),
         mixed_curvature_generators=Fraction(1, 2),
+        ricci_body=BAR_DELTA_RICCI_BODY_INPUT,
+        connection_body=BAR_DELTA_CONNECTION_BODY_INPUT,
+        generator_square_body=BAR_DELTA_GENERATOR_SQUARE_BODY_INPUT,
+        mixed_curvature_body=BAR_DELTA_MIXED_CURVATURE_BODY_INPUT,
     ),
     delta_in_box=Fraction(1),
     bar_delta_in_box=Fraction(-1),
@@ -83,9 +145,13 @@ assert totalTr == 0
 ```
 
 The first code cell contains all five coefficients for each of `Delta` and
-`barDelta`, plus the two signs/weights in `Box = Delta - barDelta`. Later input
-cells contain `N` and the eight explicit `(field, weight)` tuples. All of these
-can be edited before the later cells are run. `prepare_field_variables`
+`barDelta`, eight sector-specific typed coefficient-tensor bodies, and the two signs/weights in
+`Box = Delta - barDelta`. `BoxTensorBody` is the calculation AST and its LaTeX
+is generated from those same factors; there is no display-only duplicate.
+`Riemann(pair1,pair2)` treats each Lorentz pair as antisymmetric but assumes
+neither pair-exchange symmetry nor a Bianchi identity.
+Later input cells contain `N` and the eight explicit `(field, weight)` tuples.
+All of these can be edited before the later cells are run. `prepare_field_variables`
 prints every fully Einstein-contracted term before storing the weighted
 Cadabra expressions in `F1` through `F8`. Those variables contain the actual
 `H`, `Gamma`, `Phi`, `BarPhi`, `Rfrak`, and partial-derivative tensor ASTs;
@@ -100,14 +166,20 @@ implemented; other values fail explicitly.
 One overall weight multiplies each field's complete trace. Individual tensor
 terms do not receive independently chosen weights.
 
-The notebook finishes with a short negative control. It changes only the
-`T`-field copy of the input and sends that mapping through the same preparation,
-explicit `F1 + ... + F8`, canonicalisation, and collection path:
+The notebook finishes with a structural negative control. It replaces
+`GammaDown(B,pair1)*GammaUp(B,pair2)` by `Riemann(pair1,pair2)` only in the
+`T`-field copy and sends that mapping through the same preparation, explicit
+`F1 + ... + F8`, canonicalisation, and collection path:
 
 ```python
-normal_T_mixed = BOX_INPUT.delta.mixed_curvature_generators
-MODIFIED_T_BOX = BOX_INPUT.with_term(
-    "delta", "mixed_curvature_generators", normal_T_mixed - Fraction(1, 6)
+RIEMANN_SQUARE_BODY_INPUT = BoxTensorBody(
+    name="Riemann replacement",
+    monomials=(TensorBodyMonomial(1, (
+        TensorBodyFactor("Riemann", ("pair1", "pair2")),
+    )),),
+)
+MODIFIED_T_BOX = BOX_INPUT.with_body(
+    "delta", "generator_square", RIEMANN_SQUARE_BODY_INPUT
 )
 MODIFIED_FIELD_BOX_DEFINITIONS = dict(FIELD_BOX_DEFINITIONS)
 MODIFIED_FIELD_BOX_DEFINITIONS["T"] = MODIFIED_T_BOX
@@ -126,10 +198,10 @@ assert totalTr_modified != 0
 This field-specific mismatch is intentional. Applying the same modified Box to
 all eight fields can still give zero: the selected weights separately annihilate
 the six raw-slot representation moments, independently of the common Box
-coefficients. A nonzero result from a common modification would therefore be a
-bug, not a stronger negative control. With the default input, the T-only change
-keeps 1,994 pre-collection summands but leaves 9 nonzero coefficient rows and 5
-Cadabra-canonical residual tensor structures.
+operator structures. A nonzero result from a common modification would
+therefore be a bug, not a stronger negative control. The T-only structural
+replacement produces 1,987 pre-collection summands and leaves 107 nonzero
+coefficient rows / 91 Cadabra-canonical residual tensor structures.
 
 ## Headless verification
 
@@ -148,7 +220,10 @@ Acceptance goldens:
 - four fields, `n=2`: 1,404 expanded rows -> 404 complete tensor bodies ->
   404/404 exact zeros -> Cadabra residual `0`;
 - a common executable-Box deformation still cancels, while a T-only Box
-  deformation leaves 9 ledger rows / 5 Cadabra-canonical structures;
+  coefficient deformation leaves 9 ledger rows / 5 Cadabra-canonical
+  structures;
+- the common GammaGamma-to-Riemann structural replacement still cancels,
+  while the T-only replacement leaves 107 ledger rows / 91 Cadabra structures;
 - changing one weight from `-1/64` to `-1/63` leaves all 404 conservative
   ledger rows nonzero (358 structures after Cadabra also identifies commuting
   derivative/dummy-index equivalences).

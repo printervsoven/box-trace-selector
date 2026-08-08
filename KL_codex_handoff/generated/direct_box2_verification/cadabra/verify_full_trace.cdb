@@ -237,6 +237,109 @@ print("PASS editable main.pdf input changes the rendered Box and generated T tra
 print("PASS Appendix D.12: the editable Delta + barDelta input reduces to zero")
 
 
+# Structural input is executable as well as renderable: replace the actual
+# Gamma_Bpq Gamma^B_rs coefficient body by R_pqrs in Delta only.
+riemann_square_box = MAIN_PDF_BOX.with_body(
+    "delta", "generator_square", RIEMANN_GENERATOR_SQUARE_BODY
+)
+riemann_plus_bar_box = riemann_square_box.with_box_weights(delta=1, bar_delta=1)
+riemann_plus_bar_T = build_trace_result("T", 1, riemann_plus_bar_box)
+assert riemann_plus_bar_T.terms
+assert any(
+    factor[0] == "RiemannL"
+    for row in riemann_plus_bar_T.terms
+    for factor in row.body_key[1]
+)
+# D.12 removes only the canonical main.pdf Delta+barDelta body.  The custom
+# Riemann-GammaGamma difference must survive the same (+1,+1) outer weights.
+assert any(
+    factor[0] in {"GammaLDown", "GammaLUp"}
+    for row in riemann_plus_bar_T.terms
+    for factor in row.body_key[1]
+)
+riemann_definition_source = box_definition_latex_chunks(riemann_square_box)[1]
+assert r"\mathfrak R_{q_1q_2q_3q_4}G^{q_1q_2}G^{q_3q_4}T" in (
+    riemann_definition_source
+)
+assert r"\Gamma_{Bq_1q_2}\Gamma^B{}_{q_3q_4}G^{q_1q_2}G^{q_3q_4}T" not in (
+    riemann_definition_source
+)
+default_T_n1 = build_trace_result("T", 1, MAIN_PDF_BOX)
+riemann_T_n1 = build_trace_result("T", 1, riemann_square_box)
+default_T_n2 = build_trace_result("T", 2, MAIN_PDF_BOX)
+riemann_T_n2 = build_trace_result("T", 2, riemann_square_box)
+assert default_T_n1.terms != riemann_T_n1.terms
+assert default_T_n2.terms != riemann_T_n2.terms
+assert any(
+    factor[0] == "RiemannL"
+    for row in riemann_T_n1.terms
+    for factor in row.body_key[1]
+)
+assert any(
+    factor[0] == "RiemannL"
+    for row in riemann_T_n2.terms
+    for factor in row.body_key[1]
+)
+bad_repeated_pair_body = BoxTensorBody(
+    name="invalid repeated pair",
+    monomials=(
+        TensorBodyMonomial(
+            1,
+            (
+                TensorBodyFactor("Ricci", ("pair1",)),
+                TensorBodyFactor("Ricci", ("pair1",)),
+            ),
+        ),
+    ),
+)
+try:
+    MAIN_PDF_BOX.with_body("delta", "generator_square", bad_repeated_pair_body)
+except ValueError:
+    pass
+else:
+    raise AssertionError("Repeated/missing generator pair was not rejected")
+bad_free_coordinate_body = BoxTensorBody(
+    name="invalid free coordinate",
+    monomials=(
+        TensorBodyMonomial(
+            1,
+            (
+                TensorBodyFactor("ConnectionUp", ("coordinate", "pair1")),
+                TensorBodyFactor("Ricci", ("pair1",)),
+            ),
+        ),
+    ),
+)
+try:
+    MAIN_PDF_BOX.with_body("delta", "generator_square", bad_free_coordinate_body)
+except ValueError:
+    pass
+else:
+    raise AssertionError("Free structural coordinate was not rejected")
+try:
+    TensorBodyFactor("Riemann", ("coordinate", "pair1"))
+except ValueError:
+    pass
+else:
+    raise AssertionError("Factor-kind semantic slot mismatch was not rejected")
+bad_down_connection_body = BoxTensorBody(
+    name="invalid down connection",
+    monomials=(
+        TensorBodyMonomial(
+            1,
+            (TensorBodyFactor("GammaDown", ("coordinate", "pair1")),),
+        ),
+    ),
+)
+try:
+    MAIN_PDF_BOX.with_body("delta", "connection", bad_down_connection_body)
+except ValueError:
+    pass
+else:
+    raise AssertionError("GammaDown connection body was not rejected eagerly")
+print("PASS typed structural Box AST changes n=1/n=2 and rejects invalid bodies")
+
+
 prepared8 = prepare_field_variables(EIGHT_FIELD_COMBINATION, 2, show=False)
 assert prepared8.variable_names == ("F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8")
 assert tuple(variable.term_count for variable in prepared8.variables) == (
@@ -319,6 +422,40 @@ assert expression_term_count(inconsistent_box.cadabra_residual) == 5
 print(
     "PASS executable-Box controls: common deformation cancels; "
     "T-only deformation leaves 9 ledger / 5 Cadabra residual structures"
+)
+
+
+common_structural_replacement = sum_trace_combination(
+    EIGHT_FIELD_COMBINATION,
+    2,
+    show=False,
+    box_definition=riemann_square_box,
+)
+assert common_structural_replacement.is_zero
+T_only_structural_replacement = sum_trace_combination(
+    EIGHT_FIELD_COMBINATION,
+    2,
+    show=False,
+    box_definition=MAIN_PDF_BOX,
+    field_box_definitions={"T": riemann_square_box},
+)
+assert not T_only_structural_replacement.is_zero
+assert T_only_structural_replacement.cadabra_residual != 0
+assert T_only_structural_replacement.cadabra_precollection_terms == 1987
+assert sum(
+    row.residual != 0 for row in T_only_structural_replacement.ledger
+) == 107
+assert expression_term_count(
+    T_only_structural_replacement.cadabra_residual
+) == 91
+assert any(
+    factor[0] == "RiemannL"
+    for row in T_only_structural_replacement.field_variables[0].trace_result.terms
+    for factor in row.body_key[1]
+)
+print(
+    "PASS structural replacement reaches F1...F8: common edit cancels; "
+    "T-only edit leaves 107 ledger / 91 Cadabra residual structures"
 )
 
 
