@@ -1,0 +1,82 @@
+# Cadabra 2 independent smoke checks for the Box^2 trace project.
+#
+# This first-stage verifier checks:
+#   1. tensor antisymmetry/canonicalisation,
+#   2. an elementary Clifford product identity,
+#   3. the exact six-coefficient cancellations for the four-field and
+#      eight-field combinations.
+#
+# It does not yet rederive the 118 ordered Box^2 blocks.
+
+from cadabra2 import *
+
+
+def assert_zero(ex, label):
+    distribute(ex)
+    canonicalise(ex)
+    collect_terms(ex)
+    assert ex == 0, label + " residual: " + str(ex)
+    print("PASS:", label)
+
+
+# 1. Tensor canonicalisation smoke test.
+__cdbkernel__ = create_scope()
+{m,n,p,q}::Indices(vector).
+A_{m n}::AntiSymmetric.
+antisymmetry_check := A_{m n} + A_{n m};
+assert_zero(antisymmetry_check, "antisymmetric tensor canonicalisation")
+
+
+# 2. Clifford multiplication smoke test.
+\eta{#}::KroneckerDelta.
+\Gamma_{#}::GammaMatrix(metric=\eta).
+clifford_check := \Gamma^{m n}\Gamma_{p};
+join_gamma(clifford_check)
+clifford_expected := \Gamma^{m n}_{p}
+                    + \Gamma^{m}\eta^{n}_{p}
+                    - \Gamma^{n}\eta^{m}_{p};
+clifford_residual := @(clifford_check) - @(clifford_expected);
+assert_zero(clifford_residual, "Clifford join identity")
+
+
+# The six F symbols are universal background/operator structures.  Their
+# coefficients are the representation moments D,L,R,LL,RR,LR.
+
+# 3. Four-field combination from the proposed T,B,U,chi construction.
+T2   := 256 fD + 16 fL + 16 fR + fLR;
+B2   := 65536 fD + 12288 fL + 4096 fR
+        + 1536 fLL + 768 fLR;
+U2   := 4096 fD + 512 fL + 256 fR
+        + 32 fLL + 32 fLR;
+chi2 := 16 fD + fR;
+
+total4 := @(T2) + 1/768 @(B2) - 1/16 @(U2) - 16/3 @(chi2);
+assert_zero(total4, "four-field n=2 moment cancellation")
+
+# A deliberately wrong B weight must not cancel.
+wrong4 := @(T2) + 1/767 @(B2) - 1/16 @(U2) - 16/3 @(chi2);
+distribute(wrong4)
+canonicalise(wrong4)
+collect_terms(wrong4)
+assert wrong4 != 0, "negative control unexpectedly vanished"
+print("PASS: perturbed-weight negative control is nonzero")
+
+
+# 4. Original eight-field combination.
+phi2  := fD;
+BLL2  := 256 fD + 32 fL + 2 fLL;
+BRR2  := 256 fD + 32 fR + 2 fRR;
+UL2   := 16 fD + fL;
+UR2   := 16 fD + fR;
+ULLR2 := 4096 fD + 512 fL + 256 fR
+         + 32 fLL + 32 fLR;
+ULRR2 := 4096 fD + 256 fL + 512 fR
+         + 32 fRR + 32 fLR;
+
+total8 := @(T2) + 128 @(phi2)
+          + 1/4 @(BLL2) + 1/4 @(BRR2)
+          - 12 @(UL2) - 12 @(UR2)
+          - 1/64 @(ULLR2) - 1/64 @(ULRR2);
+assert_zero(total8, "eight-field n=2 moment cancellation")
+
+print("ALL FIRST-STAGE CADABRA CHECKS PASSED")
