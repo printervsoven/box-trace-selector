@@ -1,0 +1,221 @@
+"""Headless acceptance suite for the independent full Cadabra trace engine."""
+
+from collections import Counter
+from fractions import Fraction
+from pathlib import Path
+
+from cadabra2 import *
+
+
+# Preserve every summand until this test explicitly calls ``collect_terms``.
+# Cadabra's notebook/CLI kernel otherwise applies a default post-processor.
+def post_process(expression, kernel=None):
+    pass
+
+
+CORE = Path("full_trace_calculator.cdb").resolve()
+exec(compile(CORE.read_text(encoding="utf-8"), str(CORE), "exec"), globals())
+
+
+def expression_term_count(expression):
+    if expression == 0:
+        return 0
+    return sum(1 for _node in expression.top().terms())
+
+
+# Universal ordered differential-operator inventories.
+n1_operator = operator_terms(1)
+n2_operator = operator_terms(2)
+assert len(n1_operator) == 9
+assert sum(len(term.coefficient.terms) for term in n1_operator) == 23
+assert len(n2_operator) == 118
+assert sum(len(term.coefficient.terms) for term in n2_operator) == 867
+assert Counter(term.derivative_order for term in n2_operator) == {
+    4: 1,
+    3: 4,
+    2: 21,
+    1: 47,
+    0: 45,
+}
+assert Counter(
+    order
+    for term in n2_operator
+    for order in [term.derivative_order] * len(term.coefficient.terms)
+) == {4: 1, 3: 6, 2: 56, 1: 259, 0: 545}
+assert max(len(term.word) for term in n2_operator) == 4
+print("PASS universal operators: n=1 9/23; n=2 118/867")
+
+
+# Independent Cadabra Clifford check.  Cadabra performs the gamma algebra;
+# the result is compared coefficient-and-pairing-wise with the standalone
+# Wick recursion used by full_trace_calculator.cdb.
+__cdbkernel__ = create_scope()
+{a,b,c,d,e,f,g,h}::Indices(vector).
+{i,j}::Indices(spinor).
+Tr{#}::Trace(indices=spinor).
+\eta{#}::KroneckerDelta.
+\Gamma{#}::GammaMatrix(metric=\eta).
+\Gamma{#}::ImplicitIndex(\Gamma{#}_{i j}).
+
+
+def cadabra_bivector_trace(text, spinor_dimension=16, max_rank=8):
+    output = Ex(text)
+    for _iteration in range(12):
+        before = str(output)
+        join_gamma(output)
+        distribute(output)
+        untrace(output)
+        distribute(output)
+        canonicalise(output)
+        collect_terms(output)
+        if str(output) == before:
+            break
+    labels = list("abcdefgh")
+    for rank in range(1, max_rank + 1):
+        indices = " ".join(labels[:rank])
+        substitute(output, Ex(r"Tr(\Gamma^{" + indices + r"}) -> 0"))
+    substitute(output, Ex("Tr -> " + str(spinor_dimension)))
+    distribute(output)
+    rename_dummies(output)
+    sort_product(output)
+    canonicalise(output)
+    collect_terms(output)
+    return output
+
+
+def cadabra_eta_term_map(expression):
+    label_number = {label: number for number, label in enumerate("abcdefgh", 1)}
+    result = []
+    for term in expression.top().terms():
+        coefficient = Fraction(str(term.multiplier))
+        edges = []
+        for factor in term.factors():
+            assert factor.name == r"\eta"
+            indices = tuple(label_number[index.name] for index in factor.indices())
+            edges.append(("L", *sorted(indices)))
+        result.append((coefficient, tuple(sorted(edges))))
+    return tuple(sorted(result))
+
+
+gamma_inputs = {
+    2: r"Tr(\Gamma^{a b}\Gamma^{c d})",
+    3: r"Tr(\Gamma^{a b}\Gamma^{c d}\Gamma^{e f})",
+    4: r"Tr(\Gamma^{a b}\Gamma^{c d}\Gamma^{e f}\Gamma^{g h})",
+}
+for length, text in gamma_inputs.items():
+    cadabra_map = cadabra_eta_term_map(cadabra_bivector_trace(text))
+    labels = tuple(f"I{number}" for number in range(1, length + 1))
+    recursive_map = tuple(sorted(bivector_trace_eta_terms(labels, "L")))
+    assert cadabra_map == recursive_map
+    assert len(cadabra_map) == {2: 2, 3: 8, 4: 60}[length]
+print("PASS Cadabra Clifford maps: 2/8/60 metric pairings match exactly")
+
+
+n1_expected = {
+    "T": 8,
+    "phi": 2,
+    "BLL": 5,
+    "BRR": 5,
+    "UL": 5,
+    "UR": 5,
+    "ULLR": 8,
+    "ULRR": 8,
+    "B": 8,
+    "U": 8,
+    "chi": 5,
+}
+n2_expected = {
+    "T": (404, 419, {4: 1, 3: 2, 2: 19, 1: 86, 0: 296}),
+    "phi": (14, 14, {4: 1, 3: 2, 2: 5, 1: 6}),
+    "BLL": (192, 222, {4: 1, 3: 2, 2: 12, 1: 46, 0: 131}),
+    "BRR": (192, 222, {4: 1, 3: 2, 2: 12, 1: 46, 0: 131}),
+    "UL": (192, 195, {4: 1, 3: 2, 2: 12, 1: 46, 0: 131}),
+    "UR": (192, 195, {4: 1, 3: 2, 2: 12, 1: 46, 0: 131}),
+    "ULLR": (404, 446, {4: 1, 3: 2, 2: 19, 1: 86, 0: 296}),
+    "ULRR": (404, 446, {4: 1, 3: 2, 2: 19, 1: 86, 0: 296}),
+    "B": (404, 446, {4: 1, 3: 2, 2: 19, 1: 86, 0: 296}),
+    "U": (404, 446, {4: 1, 3: 2, 2: 19, 1: 86, 0: 296}),
+    "chi": (192, 195, {4: 1, 3: 2, 2: 12, 1: 46, 0: 131}),
+}
+
+for field_name, expected_count in n1_expected.items():
+    result = build_trace_result(field_name, 1)
+    assert result.term_count == expected_count
+
+for field_name, (expected_count, provenance, derivative_counts) in n2_expected.items():
+    result = build_trace_result(field_name, 2)
+    assert result.term_count == expected_count
+    assert result.provenance_count == provenance
+    assert result.derivative_counts == derivative_counts
+    for row in result.terms:
+        for forbidden in (
+            r"\mathcal D",
+            r"\Box",
+            r"\mathcal G",
+            r"\gamma",
+            r"\bar\gamma",
+            r"\eta",
+            r"\bar\eta",
+            "t_2",
+            "t_3",
+            "t_4",
+        ):
+            assert forbidden not in row.body_latex
+print("PASS every n=1/n=2 single-field final-term inventory")
+
+
+combo8_n2 = sum_trace_combination(EIGHT_FIELD_COMBINATION, 2, show=False)
+assert combo8_n2.term_count == 1994
+assert combo8_n2.cadabra_precollection_terms == 1994
+assert combo8_n2.canonical_keys == 404
+assert combo8_n2.zero_keys == 404
+assert combo8_n2.cadabra_residual == 0
+assert combo8_n2.is_zero
+assert Counter(len(row.contributions) for row in combo8_n2.ledger) == {
+    3: 34,
+    5: 356,
+    8: 14,
+}
+print("PASS 8-field n=2: 1994 expanded terms -> 404/404 exact zeros")
+
+
+combo4_n2 = sum_trace_combination(FOUR_FIELD_COMBINATION, 2, show=False)
+assert combo4_n2.term_count == 1404
+assert combo4_n2.cadabra_precollection_terms == 1404
+assert combo4_n2.canonical_keys == 404
+assert combo4_n2.zero_keys == 404
+assert combo4_n2.cadabra_residual == 0
+assert combo4_n2.is_zero
+assert Counter(len(row.contributions) for row in combo4_n2.ledger) == {
+    3: 212,
+    4: 192,
+}
+print("PASS 4-field n=2: 1404 expanded terms -> 404/404 exact zeros")
+
+
+combo8_n1 = sum_trace_combination(EIGHT_FIELD_COMBINATION, 1, show=False)
+assert combo8_n1.term_count == 46
+assert combo8_n1.cadabra_precollection_terms == 46
+assert combo8_n1.canonical_keys == 8
+assert combo8_n1.zero_keys == 8
+assert combo8_n1.cadabra_residual == 0
+
+combo4_n1 = sum_trace_combination(FOUR_FIELD_COMBINATION, 1, show=False)
+assert combo4_n1.term_count == 29
+assert combo4_n1.cadabra_precollection_terms == 29
+assert combo4_n1.canonical_keys == 8
+assert combo4_n1.zero_keys == 8
+assert combo4_n1.cadabra_residual == 0
+print("PASS same numerical relative weights also cancel the representation n=1 traces")
+
+
+bad_combination = list(EIGHT_FIELD_COMBINATION)
+bad_combination[-2] = ("ULLR", Fraction(-1, 63))
+negative_control = sum_trace_combination(bad_combination, 2, show=False)
+assert negative_control.cadabra_residual != 0
+assert not negative_control.is_zero
+assert expression_term_count(negative_control.cadabra_residual) == 404
+print("PASS negative control: changing -1/64 to -1/63 leaves 404 residuals")
+
+
+print("ALL FULL-TRACE CADABRA TESTS PASSED")

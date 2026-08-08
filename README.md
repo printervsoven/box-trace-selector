@@ -29,6 +29,25 @@ python -m unittest -v test_verify_direct_box2.py test_trace_selector_web.py
 python verify_direct_box2.py --verify-all
 ```
 
+## Independent Cadabra/Jupyter calculator
+
+The full `n=1`/`n=2` recalculation is also implemented independently for
+Cadabra 2.5.14 in:
+
+```text
+KL_codex_handoff\generated\direct_box2_verification\cadabra
+```
+
+After the WSL environment is installed, double-click
+`run_cadabra_jupyter.cmd`. It opens `full_trace_verification.ipynb`, whose
+`trace_terms(field,n)` function prints every final term and whose
+`sum_trace_combination(combination,n)` function sends every weighted term to
+Cadabra before collecting the exact residual. The headless full test is:
+
+```bash
+cadabra2 -q verify_full_trace.cdb
+```
+
 The browser UI renders the fully expanded `n=2` results using ordinary
 partial derivatives and Einstein-contracted background tensor indices. It
 does not expose internal moment-basis or gamma-trace shorthand.

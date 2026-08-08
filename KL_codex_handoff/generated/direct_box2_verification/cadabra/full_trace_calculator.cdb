@@ -1,0 +1,1490 @@
+"""Independent Cadabra2 calculator for the fully expanded Box traces.
+
+This module is deliberately self-contained: it does not import the existing
+``verify_direct_box2.py`` or web renderer.  It encodes the single-Box blocks,
+the ordered differential-operator composition, raw tensor-slot generators,
+the D=10 chiral Clifford trace and the final Einstein contractions directly.
+
+Public entry points
+-------------------
+``trace_terms(field, n)``
+    Generate and (by default) print every final term of the selected raw field
+    for n=1 or n=2.
+
+``sum_trace_combination(combination, n)``
+    Expand every selected field, multiply by its one overall weight, and ask
+    Cadabra to collect the entire coefficientwise sum.
+"""
+
+from collections import defaultdict
+from dataclasses import dataclass
+from fractions import Fraction
+from functools import lru_cache
+from itertools import product
+import re
+
+from cadabra2 import Ex, canonicalise, collect_terms, distribute
+
+
+D_SPIN = 16
+
+
+# Cadabra's default front-end hook may collect an assigned expression before
+# the caller can audit its summands.  This calculator performs every requested
+# normalisation explicitly and therefore keeps that automatic hook disabled.
+def post_process(expression, kernel=None):
+    pass
+
+
+@dataclass(frozen=True, order=True)
+class Factor:
+    kind: str
+    indices: tuple[str, ...]
+    derivs: tuple[str, ...] = ()
+
+    def derivative(self, index: str):
+        return Factor(
+            self.kind,
+            self.indices,
+            tuple(sorted(self.derivs + (index,))),
+        )
+
+    def text(self):
+        base = f"{self.kind}[{','.join(self.indices)}]"
+        return f"d({','.join(self.derivs)}){base}" if self.derivs else base
+
+
+class Polynomial:
+    """Small exact commutative polynomial used for background coefficients."""
+
+    def __init__(self, terms=None):
+        self.terms = defaultdict(Fraction)
+        if terms:
+            for monomial, coefficient in terms.items():
+                if coefficient:
+                    self.terms[tuple(sorted(monomial))] += Fraction(coefficient)
+        self._cleanup()
+
+    @staticmethod
+    def factor(factor, coefficient=Fraction(1)):
+        return Polynomial({(factor,): Fraction(coefficient)})
+
+    def copy(self):
+        return Polynomial(dict(self.terms))
+
+    def _cleanup(self):
+        for monomial in [key for key, value in self.terms.items() if not value]:
+            del self.terms[monomial]
+
+    def __add__(self, other):
+        output = self.copy()
+        for monomial, coefficient in other.terms.items():
+            output.terms[monomial] += coefficient
+        output._cleanup()
+        return output
+
+    def __sub__(self, other):
+        return self + (-other)
+
+    def __neg__(self):
+        return Polynomial({key: -value for key, value in self.terms.items()})
+
+    def __mul__(self, other):
+        if isinstance(other, (int, Fraction)):
+            return Polynomial(
+                {key: value * Fraction(other) for key, value in self.terms.items()}
+            )
+        output = defaultdict(Fraction)
+        for left, left_coefficient in self.terms.items():
+            for right, right_coefficient in other.terms.items():
+                output[tuple(sorted(left + right))] += (
+                    left_coefficient * right_coefficient
+                )
+        return Polynomial(output)
+
+    def __rmul__(self, other):
+        return self * other
+
+    def derivative(self, index):
+        output = defaultdict(Fraction)
+        for monomial, coefficient in self.terms.items():
+            for position, factor in enumerate(monomial):
+                differentiated = list(monomial)
+                differentiated[position] = factor.derivative(index)
+                output[tuple(sorted(differentiated))] += coefficient
+        return Polynomial(output)
+
+    def second_derivative(self, first, second):
+        return self.derivative(second).derivative(first)
+
+
+class Fresh:
+    def __init__(self):
+        self.number = 0
+
+    def reset(self):
+        self.number = 0
+
+    def index(self, stem):
+        self.number += 1
+        return f"{stem}{self.number}"
+
+
+fresh = Fresh()
+
+
+def F(kind, *indices, derivs=()):
+    return Polynomial.factor(
+        Factor(kind, tuple(indices), tuple(sorted(derivs)))
+    )
+
+
+def H(first, second):
+    return F("H", first, second)
+
+
+def dH(first, second, *derivatives):
+    return F("H", first, second, derivs=derivatives)
+
+
+def GammaABC(first, second, upper):
+    return F("GammaABC", first, second, upper)
+
+
+def GammaLUp(coordinate, pair):
+    return F("GammaLUp", coordinate, pair)
+
+
+def GammaRUp(coordinate, pair):
+    return F("GammaRUp", coordinate, pair)
+
+
+def GammaLDown(coordinate, pair):
+    return F("GammaLDown", coordinate, pair)
+
+
+def GammaRDown(coordinate, pair):
+    return F("GammaRDown", coordinate, pair)
+
+
+def Phi(coordinate, pair):
+    return F("Phi", coordinate, pair)
+
+
+def BarPhi(coordinate, pair):
+    return F("BarPhi", coordinate, pair)
+
+
+def RicL(pair):
+    return F("RicL", pair)
+
+
+def RicR(pair):
+    return F("RicR", pair)
+
+
+def MixRL(right_pair, left_pair):
+    return F("MixRL", right_pair, left_pair)
+
+
+def MixLR(left_pair, right_pair):
+    return F("MixLR", left_pair, right_pair)
+
+
+# The following eight blocks are the A and B coefficients of the specialized
+# single Box.  Every dummy label is local to one call.
+def block_h(coordinate):
+    first, second = fresh.index("m"), fresh.index("n")
+    return H(first, second) * GammaABC(first, second, coordinate)
+
+
+def block_u(coordinate, pair):
+    dummy = fresh.index("m")
+    return H(coordinate, dummy) * Phi(dummy, pair) - GammaLUp(coordinate, pair)
+
+
+def block_v(coordinate, pair):
+    dummy = fresh.index("m")
+    return H(coordinate, dummy) * BarPhi(dummy, pair) + GammaRUp(coordinate, pair)
+
+
+def block_p(pair):
+    first, second, upper = fresh.index("m"), fresh.index("n"), fresh.index("c")
+    return (
+        RicL(pair)
+        + Fraction(1, 2) * H(first, second) * Phi(second, pair).derivative(first)
+        + Fraction(1, 2)
+        * H(first, second)
+        * GammaABC(first, second, upper)
+        * Phi(upper, pair)
+    )
+
+
+def block_q(pair):
+    first, second, upper = fresh.index("m"), fresh.index("n"), fresh.index("c")
+    return (
+        -RicR(pair)
+        + Fraction(1, 2)
+        * H(first, second)
+        * BarPhi(second, pair).derivative(first)
+        + Fraction(1, 2)
+        * H(first, second)
+        * GammaABC(first, second, upper)
+        * BarPhi(upper, pair)
+    )
+
+
+def block_r(first_pair, second_pair):
+    first = fresh.index("m")
+    second = fresh.index("n")
+    upper = fresh.index("c")
+    lower = fresh.index("a")
+    return (
+        Fraction(1, 4) * H(first, second) * Phi(first, first_pair) * Phi(second, second_pair)
+        - Fraction(1, 2) * GammaLUp(upper, first_pair) * Phi(upper, second_pair)
+        + Fraction(1, 4)
+        * GammaLDown(lower, first_pair)
+        * GammaLUp(lower, second_pair)
+    )
+
+
+def block_s(first_pair, second_pair):
+    first = fresh.index("m")
+    second = fresh.index("n")
+    upper = fresh.index("c")
+    lower = fresh.index("a")
+    return (
+        Fraction(1, 4)
+        * H(first, second)
+        * BarPhi(first, first_pair)
+        * BarPhi(second, second_pair)
+        + Fraction(1, 2)
+        * GammaRUp(upper, first_pair)
+        * BarPhi(upper, second_pair)
+        - Fraction(1, 4)
+        * GammaRDown(lower, first_pair)
+        * GammaRUp(lower, second_pair)
+    )
+
+
+def block_t(left_pair, right_pair):
+    first, second = fresh.index("m"), fresh.index("n")
+    left_coordinate, right_coordinate = fresh.index("c"), fresh.index("c")
+    return (
+        Fraction(1, 2)
+        * H(first, second)
+        * Phi(first, left_pair)
+        * BarPhi(second, right_pair)
+        - Fraction(1, 2)
+        * GammaLUp(left_coordinate, left_pair)
+        * BarPhi(left_coordinate, right_pair)
+        + Fraction(1, 2)
+        * GammaRUp(right_coordinate, right_pair)
+        * Phi(right_coordinate, left_pair)
+        + Fraction(1, 2) * MixRL(right_pair, left_pair)
+        - Fraction(1, 2) * MixLR(left_pair, right_pair)
+    )
+
+
+A_KINDS = ("A0", "AL", "AR")
+B_KINDS = ("BL", "BR", "BLL", "BRR", "BLR")
+
+
+def A_component(kind, coordinate, counters):
+    if kind == "A0":
+        return block_h(coordinate), (), "h"
+    if kind == "AL":
+        counters[0] += 1
+        pair = f"I{counters[0]}"
+        return block_u(coordinate, pair), (("L", pair),), "u"
+    if kind == "AR":
+        counters[1] += 1
+        pair = f"J{counters[1]}"
+        return block_v(coordinate, pair), (("R", pair),), "v"
+    raise ValueError(kind)
+
+
+def B_component(kind, counters):
+    if kind == "BL":
+        counters[0] += 1
+        pair = f"I{counters[0]}"
+        return block_p(pair), (("L", pair),), "p"
+    if kind == "BR":
+        counters[1] += 1
+        pair = f"J{counters[1]}"
+        return block_q(pair), (("R", pair),), "q"
+    if kind == "BLL":
+        counters[0] += 1
+        first = f"I{counters[0]}"
+        counters[0] += 1
+        second = f"I{counters[0]}"
+        return block_r(first, second), (("L", first), ("L", second)), "r"
+    if kind == "BRR":
+        counters[1] += 1
+        first = f"J{counters[1]}"
+        counters[1] += 1
+        second = f"J{counters[1]}"
+        return block_s(first, second), (("R", first), ("R", second)), "s"
+    if kind == "BLR":
+        counters[0] += 1
+        left = f"I{counters[0]}"
+        counters[1] += 1
+        right = f"J{counters[1]}"
+        return block_t(left, right), (("L", left), ("R", right)), "t"
+    raise ValueError(kind)
+
+
+@dataclass(frozen=True)
+class OperatorTerm:
+    term_id: str
+    source: str
+    derivative_order: int
+    derivative_indices: tuple[str, ...]
+    coefficient: Polynomial
+    word: tuple[tuple[str, str], ...]
+    block_signature: str
+
+
+def generate_n1_operator_terms():
+    fresh.reset()
+    terms = []
+
+    def add(source, order, indices, coefficient, word, signature):
+        terms.append(
+            OperatorTerm(
+                f"N1T{len(terms) + 1:02d}",
+                source,
+                order,
+                tuple(indices),
+                coefficient,
+                tuple(word),
+                signature,
+            )
+        )
+
+    add("H d2", 2, ("A", "B"), H("A", "B"), (), "H")
+    for kind in A_KINDS:
+        coefficient, word, name = A_component(kind, "C", [0, 0])
+        add("A d1", 1, ("C",), coefficient, word, name)
+    for kind in B_KINDS:
+        coefficient, word, name = B_component(kind, [0, 0])
+        add("B d0", 0, (), coefficient, word, name)
+    assert len(terms) == 9
+    return terms
+
+
+def generate_n2_operator_terms():
+    """Equation (39.33), fully expanded into the 118 ordered block terms."""
+    fresh.reset()
+    terms = []
+
+    def add(source, order, indices, coefficient, word, signature):
+        terms.append(
+            OperatorTerm(
+                f"T{len(terms) + 1:03d}",
+                source,
+                order,
+                tuple(indices),
+                coefficient,
+                tuple(word),
+                signature,
+            )
+        )
+
+    A, B, C, D, E = "A", "B", "C", "D", "E"
+    add("HH d4", 4, (A, B, C, D), H(A, B) * H(C, D), (), "HH")
+    add("H dH d3", 3, (B, C, D), 2 * H(A, B) * dH(C, D, A), (), "H dH")
+    for kind in A_KINDS:
+        coefficient, word, name = A_component(kind, C, [0, 0])
+        add("H A d3", 3, (A, B, C), 2 * H(A, B) * coefficient, word, f"H {name}")
+    add("H ddH d2", 2, (C, D), H(A, B) * dH(C, D, A, B), (), "H ddH")
+    for kind in A_KINDS:
+        coefficient, word, name = A_component(kind, E, [0, 0])
+        add("A dH d2", 2, (C, D), coefficient * dH(C, D, E), word, f"{name} dH")
+    for kind in A_KINDS:
+        coefficient, word, name = A_component(kind, C, [0, 0])
+        add("H dA d2", 2, (B, C), 2 * H(A, B) * coefficient.derivative(A), word, f"H d{name}")
+    for left_kind in A_KINDS:
+        for right_kind in A_KINDS:
+            counters = [0, 0]
+            left, left_word, left_name = A_component(left_kind, E, counters)
+            right, right_word, right_name = A_component(right_kind, C, counters)
+            add("A A d2", 2, (E, C), left * right, left_word + right_word, left_name + right_name)
+    for kind in B_KINDS:
+        coefficient, word, name = B_component(kind, [0, 0])
+        add("H B d2", 2, (A, B), 2 * H(A, B) * coefficient, word, f"H {name}")
+    for kind in A_KINDS:
+        coefficient, word, name = A_component(kind, C, [0, 0])
+        add("H ddA d1", 1, (C,), H(A, B) * coefficient.second_derivative(A, B), word, f"H dd{name}")
+    for left_kind in A_KINDS:
+        for right_kind in A_KINDS:
+            counters = [0, 0]
+            left, left_word, left_name = A_component(left_kind, E, counters)
+            right, right_word, right_name = A_component(right_kind, C, counters)
+            add("A dA d1", 1, (C,), left * right.derivative(E), left_word + right_word, f"{left_name} d{right_name}")
+    for kind in B_KINDS:
+        coefficient, word, name = B_component(kind, [0, 0])
+        add("H dB d1", 1, (C,), 2 * H(A, C) * coefficient.derivative(A), word, f"H d{name}")
+    for a_kind in A_KINDS:
+        for b_kind in B_KINDS:
+            counters = [0, 0]
+            a_coefficient, a_word, a_name = A_component(a_kind, C, counters)
+            b_coefficient, b_word, b_name = B_component(b_kind, counters)
+            add("A B d1", 1, (C,), a_coefficient * b_coefficient, a_word + b_word, a_name + b_name)
+    for b_kind in B_KINDS:
+        for a_kind in A_KINDS:
+            counters = [0, 0]
+            b_coefficient, b_word, b_name = B_component(b_kind, counters)
+            a_coefficient, a_word, a_name = A_component(a_kind, C, counters)
+            add("B A d1", 1, (C,), b_coefficient * a_coefficient, b_word + a_word, b_name + a_name)
+    for kind in B_KINDS:
+        coefficient, word, name = B_component(kind, [0, 0])
+        add("H ddB d0", 0, (), H(A, B) * coefficient.second_derivative(A, B), word, f"H dd{name}")
+    for a_kind in A_KINDS:
+        for b_kind in B_KINDS:
+            counters = [0, 0]
+            a_coefficient, a_word, a_name = A_component(a_kind, E, counters)
+            b_coefficient, b_word, b_name = B_component(b_kind, counters)
+            add("A dB d0", 0, (), a_coefficient * b_coefficient.derivative(E), a_word + b_word, f"{a_name} d{b_name}")
+    for left_kind in B_KINDS:
+        for right_kind in B_KINDS:
+            counters = [0, 0]
+            left, left_word, left_name = B_component(left_kind, counters)
+            right, right_word, right_name = B_component(right_kind, counters)
+            add("B B d0", 0, (), left * right, left_word + right_word, left_name + right_name)
+
+    assert len(terms) == 118
+    assert sum(len(term.coefficient.terms) for term in terms) == 867
+    return terms
+
+
+def operator_terms(n):
+    if n == 1:
+        return generate_n1_operator_terms()
+    if n == 2:
+        return generate_n2_operator_terms()
+    raise ValueError("This exact calculator currently supports n=1 and n=2")
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    name: str
+    a: int
+    b: int
+    latex: str
+
+
+FIELD_SPECS = {
+    "T": FieldSpec("T", 1, 1, r"T^{\alpha}{}_{\bar\alpha}"),
+    "phi": FieldSpec("phi", 0, 0, r"\phi"),
+    "BLL": FieldSpec("BLL", 2, 0, r"B_{LL}^{\alpha\beta}"),
+    "BRR": FieldSpec("BRR", 0, 2, r"B_{RR\,\bar\alpha\bar\beta}"),
+    "UL": FieldSpec("UL", 1, 0, r"U_L^{\alpha}"),
+    "UR": FieldSpec("UR", 0, 1, r"U_{R\,\bar\alpha}"),
+    "ULLR": FieldSpec("ULLR", 2, 1, r"U_{LLR}^{\alpha_1\alpha_2}{}_{\bar\alpha}"),
+    "ULRR": FieldSpec("ULRR", 1, 2, r"U_{LRR}^{\alpha}{}_{\bar\alpha_1\bar\alpha_2}"),
+    "B": FieldSpec("B", 3, 1, r"B^{\alpha_1\alpha_2\alpha_3}{}_{\bar\beta}"),
+    "U": FieldSpec("U", 2, 1, r"U^{\alpha_1\alpha_2}{}_{\bar\beta}"),
+    "chi": FieldSpec("chi", 0, 1, r"\chi_{\bar\beta}"),
+}
+
+
+EIGHT_FIELD_COMBINATION = (
+    ("T", Fraction(1)),
+    ("phi", Fraction(128)),
+    ("BLL", Fraction(1, 4)),
+    ("BRR", Fraction(1, 4)),
+    ("UL", Fraction(-12)),
+    ("UR", Fraction(-12)),
+    ("ULLR", Fraction(-1, 64)),
+    ("ULRR", Fraction(-1, 64)),
+)
+
+
+FOUR_FIELD_COMBINATION = (
+    ("T", Fraction(1)),
+    ("B", Fraction(1, 768)),
+    ("U", Fraction(-1, 16)),
+    ("chi", Fraction(-16, 3)),
+)
+
+
+DEFAULT_WEIGHTS = dict(EIGHT_FIELD_COMBINATION + FOUR_FIELD_COMBINATION)
+
+
+def resolve_field(field):
+    if isinstance(field, FieldSpec):
+        return field
+    aliases = {
+        "t": "T",
+        "phi": "phi",
+        "bll": "BLL",
+        "b_ll": "BLL",
+        "brr": "BRR",
+        "b_rr": "BRR",
+        "ul": "UL",
+        "u_l": "UL",
+        "ur": "UR",
+        "u_r": "UR",
+        "ullr": "ULLR",
+        "u_llr": "ULLR",
+        "ulrr": "ULRR",
+        "u_lrr": "ULRR",
+        "b": "B",
+        "u": "U",
+        "chi": "chi",
+    }
+    key = aliases.get(str(field).strip().lower())
+    if key is None:
+        raise KeyError(f"Unknown field: {field}")
+    return FIELD_SPECS[key]
+
+
+def slot_trace_expansion(word, a, b):
+    """Expand total generators over every raw tensor-product spinor slot."""
+    if any(sector == "L" for sector, _ in word) and a == 0:
+        return []
+    if any(sector == "R" for sector, _ in word) and b == 0:
+        return []
+
+    choices = [range(a) if sector == "L" else range(b) for sector, _ in word]
+    assignments = product(*choices) if choices else [()]
+    expanded = defaultdict(Fraction)
+    right_count = sum(sector == "R" for sector, _ in word)
+    generator_scale = Fraction((-1) ** right_count, 2 ** len(word))
+
+    for assignment in assignments:
+        left_slots = [[] for _ in range(a)]
+        right_slots = [[] for _ in range(b)]
+        for (sector, label), slot in zip(word, assignment):
+            (left_slots if sector == "L" else right_slots)[slot].append(label)
+        if any(len(slot_word) == 1 for slot_word in left_slots + right_slots):
+            continue
+        unused = sum(not slot_word for slot_word in left_slots + right_slots)
+        left_words = tuple(
+            sorted(tuple(slot_word) for slot_word in left_slots if slot_word)
+        )
+        # A barred generator acts from the right; reverse each occupied slot.
+        right_words = tuple(
+            sorted(tuple(reversed(slot_word)) for slot_word in right_slots if slot_word)
+        )
+        expanded[(left_words, right_words)] += (
+            generator_scale * D_SPIN ** unused
+        )
+
+    return [
+        (coefficient, left_words, right_words)
+        for (left_words, right_words), coefficient in sorted(expanded.items())
+        if coefficient
+    ]
+
+
+@lru_cache(maxsize=None)
+def ordinary_gamma_pairings(atoms):
+    """Wick pairing polynomial of an even D=10 chiral gamma word."""
+    if not atoms:
+        return (((), Fraction(D_SPIN)),)
+    if len(atoms) % 2:
+        return ()
+    first = atoms[0]
+    expanded = defaultdict(Fraction)
+    for partner_position in range(1, len(atoms)):
+        partner = atoms[partner_position]
+        sign = -1 if partner_position % 2 == 0 else 1
+        remaining = atoms[1:partner_position] + atoms[partner_position + 1 :]
+        metric = tuple(sorted((first, partner)))
+        for monomial, coefficient in ordinary_gamma_pairings(remaining):
+            expanded[tuple(sorted((metric,) + monomial))] += sign * coefficient
+    return tuple(
+        (monomial, coefficient)
+        for monomial, coefficient in sorted(expanded.items())
+        if coefficient
+    )
+
+
+def bivector_atoms(label, sector):
+    match = re.fullmatch(r"([IJ])(\d+)", label)
+    if match is None:
+        raise ValueError(f"Unsupported generator-pair label: {label}")
+    prefix, number_text = match.groups()
+    expected = "I" if sector == "L" else "J"
+    if prefix != expected:
+        raise ValueError(f"Generator sector mismatch: {sector}, {label}")
+    number = int(number_text)
+    return 2 * number - 1, 2 * number
+
+
+@lru_cache(maxsize=None)
+def bivector_trace_eta_terms(labels, sector):
+    """Fully distribute a trace of two, three or four bivectors."""
+    if len(labels) == 1:
+        return ()
+    if not 2 <= len(labels) <= 4:
+        raise ValueError(f"Unsupported bivector trace length: {len(labels)}")
+    expanded = defaultdict(Fraction)
+    for orientations in product((0, 1), repeat=len(labels)):
+        atoms = []
+        orientation_sign = 1
+        for label, reversed_orientation in zip(labels, orientations):
+            pair = bivector_atoms(label, sector)
+            if reversed_orientation:
+                pair = tuple(reversed(pair))
+                orientation_sign *= -1
+            atoms.extend(pair)
+        scale = Fraction(orientation_sign, 2 ** len(labels))
+        for monomial, coefficient in ordinary_gamma_pairings(tuple(atoms)):
+            tagged = tuple((sector, first, second) for first, second in monomial)
+            expanded[tagged] += scale * coefficient
+    return tuple(
+        (coefficient, monomial)
+        for monomial, coefficient in sorted(expanded.items())
+        if coefficient
+    )
+
+
+@lru_cache(maxsize=None)
+def slot_raw_eta_expansion(left_words, right_words):
+    expanded = {(): Fraction(1)}
+    trace_words = [(labels, "L") for labels in left_words]
+    trace_words += [(labels, "R") for labels in right_words]
+    for labels, sector in trace_words:
+        following = defaultdict(Fraction)
+        for first_monomial, first_coefficient in expanded.items():
+            for second_coefficient, second_monomial in bivector_trace_eta_terms(
+                labels, sector
+            ):
+                following[tuple(sorted(first_monomial + second_monomial))] += (
+                    first_coefficient * second_coefficient
+                )
+        expanded = {
+            monomial: coefficient
+            for monomial, coefficient in following.items()
+            if coefficient
+        }
+    return tuple(
+        (coefficient, monomial)
+        for monomial, coefficient in sorted(expanded.items())
+        if coefficient
+    )
+
+
+PAIR_FACTOR_SLOTS = {
+    ("GammaLUp", 1): "L",
+    ("GammaRUp", 1): "R",
+    ("GammaLDown", 1): "L",
+    ("GammaRDown", 1): "R",
+    ("Phi", 1): "L",
+    ("BarPhi", 1): "R",
+    ("RicL", 0): "L",
+    ("RicR", 0): "R",
+    ("MixRL", 0): "R",
+    ("MixRL", 1): "L",
+    ("MixLR", 0): "L",
+    ("MixLR", 1): "R",
+}
+
+
+def validate_pair_monomial(monomial, word):
+    """Fail closed unless every word label has one antisymmetric AST slot."""
+    expected = {label: sector for sector, label in word}
+    if len(expected) != len(word):
+        raise ValueError("Generator labels must be unique in an ordered word")
+    occurrences = defaultdict(list)
+    for factor in monomial:
+        for position, value in enumerate(factor.indices):
+            match = re.fullmatch(r"([IJ])(\d+)", value)
+            if match is None:
+                continue
+            sector = "L" if match.group(1) == "I" else "R"
+            if PAIR_FACTOR_SLOTS.get((factor.kind, position)) != sector:
+                raise ValueError(
+                    f"Pair {value} is not in an antisymmetric factor slot"
+                )
+            if expected.get(value) != sector:
+                raise ValueError(f"Unexpected pair label {value}")
+            occurrences[value].append((factor.kind, position))
+    for label in expected:
+        if len(occurrences[label]) != 1:
+            raise ValueError(
+                f"Expected one antisymmetric occurrence of {label}, "
+                f"found {len(occurrences[label])}"
+            )
+    return tuple(sorted((sector, int(label[1:])) for label, sector in expected.items()))
+
+
+@lru_cache(maxsize=None)
+def pair_flip_canonical(eta_monomial, vertices):
+    expected_atoms = {
+        (sector, atom)
+        for sector, number in vertices
+        for atom in (2 * number - 1, 2 * number)
+    }
+    actual_atoms = []
+    for sector, first, second in eta_monomial:
+        actual_atoms.extend(((sector, first), (sector, second)))
+    if len(actual_atoms) != len(expected_atoms) or set(actual_atoms) != expected_atoms:
+        raise ValueError("Metric monomial does not contain every local atom once")
+
+    candidates = []
+    for flips in product((0, 1), repeat=len(vertices)):
+        flipped = {vertex for vertex, enabled in zip(vertices, flips) if enabled}
+
+        def transform(sector, atom):
+            vertex = (sector, (atom + 1) // 2)
+            if vertex not in flipped:
+                return atom
+            return atom + 1 if atom % 2 else atom - 1
+
+        transformed = []
+        for sector, first, second in eta_monomial:
+            transformed.append(
+                (sector, *sorted((transform(sector, first), transform(sector, second))))
+            )
+        candidates.append((tuple(sorted(transformed)), (-1) ** sum(flips)))
+    canonical = min(monomial for monomial, _ in candidates)
+    signs = {sign for monomial, sign in candidates if monomial == canonical}
+    if len(signs) != 1:
+        raise ValueError("Odd pair-flip stabilizer")
+    return canonical, signs.pop()
+
+
+def slot_eta_expansion(left_words, right_words, word, monomial):
+    vertices = validate_pair_monomial(monomial, word)
+    traced = [label for labels in left_words for label in labels]
+    traced += [label for labels in right_words for label in labels]
+    if sorted(traced) != sorted(label for _, label in word):
+        raise ValueError("Slot trace does not contain the complete ordered word")
+    expanded = defaultdict(Fraction)
+    for coefficient, eta_monomial in slot_raw_eta_expansion(
+        left_words, right_words
+    ):
+        canonical, background_sign = pair_flip_canonical(eta_monomial, vertices)
+        expanded[canonical] += coefficient * background_sign
+    return tuple(
+        (coefficient, monomial)
+        for monomial, coefficient in sorted(expanded.items())
+        if coefficient
+    )
+
+
+LOCAL_DUMMY_NAMES = ("p", "q", "r", "s")
+
+
+def pair_occurrences(monomial, word):
+    validate_pair_monomial(monomial, word)
+    expected = {label: sector for sector, label in word}
+    occurrences = {}
+    for factor_position, factor in enumerate(monomial):
+        for index_position, value in enumerate(factor.indices):
+            if value in expected:
+                occurrences[value] = (
+                    factor_position,
+                    index_position,
+                    expected[value],
+                )
+    if set(occurrences) != set(expected):
+        raise ValueError("Could not locate every validated pair")
+    return occurrences
+
+
+@lru_cache(maxsize=None)
+def absorb_eta_contraction(monomial, word, eta_monomial):
+    """Replace every eta edge by one explicit lower/upper Einstein dummy."""
+    occurrences = pair_occurrences(monomial, word)
+    atom_owners = {}
+    for sector, label in word:
+        number = int(label[1:])
+        for endpoint, atom in enumerate((2 * number - 1, 2 * number)):
+            atom_owners[(sector, atom)] = (label, endpoint)
+
+    expected_atoms = set(atom_owners)
+    actual_atoms = []
+    sorted_edges = tuple(sorted(eta_monomial))
+    for sector, first, second in sorted_edges:
+        if sector not in {"L", "R"} or first >= second:
+            raise ValueError("Non-canonical local metric edge")
+        actual_atoms.extend(((sector, first), (sector, second)))
+    if len(actual_atoms) != len(expected_atoms) or set(actual_atoms) != expected_atoms:
+        raise ValueError("Metric matching is not a perfect matching")
+    if len(set(actual_atoms)) != len(actual_atoms):
+        raise ValueError("Metric matching repeats an atom")
+
+    assignments = {label: [None, None] for _, label in word}
+    sector_counts = defaultdict(int)
+    for sector, first, second in sorted_edges:
+        first_owner = atom_owners[(sector, first)]
+        second_owner = atom_owners[(sector, second)]
+        if first_owner[0] == second_owner[0]:
+            raise ValueError("A symmetric metric cannot self-contract a bivector")
+        edge_number = sector_counts[sector]
+        sector_counts[sector] += 1
+        first_label, first_endpoint = first_owner
+        second_label, second_endpoint = second_owner
+        assignments[first_label][first_endpoint] = (sector, edge_number, "down")
+        assignments[second_label][second_endpoint] = (sector, edge_number, "up")
+
+    if any(any(endpoint is None for endpoint in endpoints) for endpoints in assignments.values()):
+        raise ValueError("Incomplete Lorentz contraction assignment")
+    order = sorted(occurrences, key=lambda label: (*occurrences[label][:2], label))
+    key = tuple((label, tuple(assignments[label])) for label in order)
+    return key
+
+
+# ---------------------------------------------------------------------------
+# Final main.pdf-native Einstein-contracted tensor bodies
+# ---------------------------------------------------------------------------
+
+COORDINATE_DUMMY_NAMES = tuple("MNPQRSUVWXYZ")
+
+
+def latex_index(label):
+    match = re.fullmatch(r"([A-Za-z]+)(\d+)", label)
+    if match:
+        stem, number = match.groups()
+        if stem == "J":
+            return rf"\bar J_{{{number}}}"
+        return rf"{stem}_{{{number}}}"
+    return label
+
+
+def fraction_latex(value):
+    value = Fraction(value)
+    if value.denominator == 1:
+        return str(value.numerator)
+    return rf"\frac{{{value.numerator}}}{{{value.denominator}}}"
+
+
+def fraction_text(value):
+    value = Fraction(value)
+    if value.denominator == 1:
+        return str(value.numerator)
+    return f"({value.numerator}/{value.denominator})"
+
+
+def coordinate_map(monomial):
+    """Rename engine-local coordinate dummies deterministically per row."""
+    candidates = []
+    for factor in monomial:
+        candidates.extend(
+            value for value in factor.indices if re.fullmatch(r"[a-z]+\d+", value)
+        )
+        candidates.extend(
+            value for value in factor.derivs if re.fullmatch(r"[a-z]+\d+", value)
+        )
+    unique = list(dict.fromkeys(candidates))
+    if len(unique) > len(COORDINATE_DUMMY_NAMES):
+        raise ValueError("Too many primitive coordinate dummy indices")
+    return dict(zip(unique, COORDINATE_DUMMY_NAMES))
+
+
+def local_dummy_latex(endpoint):
+    sector, edge_number, variance = endpoint
+    if sector not in {"L", "R"}:
+        raise ValueError(f"Unsupported Lorentz sector: {sector}")
+    if not 0 <= edge_number < len(LOCAL_DUMMY_NAMES):
+        raise ValueError(f"Unsupported Lorentz dummy number: {edge_number}")
+    if variance not in {"down", "up"}:
+        raise ValueError(f"Unsupported Lorentz variance: {variance}")
+    symbol = LOCAL_DUMMY_NAMES[edge_number]
+    if sector == "R":
+        symbol = rf"\bar {symbol}"
+    return symbol, variance
+
+
+def tensor_with_indices_latex(base, slots):
+    """Render ordered tensor slots, preserving mixed-variance slot order."""
+    if any(variance not in {"down", "up"} for _index, variance in slots):
+        raise ValueError("Tensor variance must be 'down' or 'up'")
+    groups = []
+    for index, variance in slots:
+        if groups and groups[-1][0] == variance:
+            groups[-1][1].append(index)
+        else:
+            groups.append((variance, [index]))
+    rendered = base
+    for position, (variance, indices) in enumerate(groups):
+        if position:
+            rendered += "{}"
+        rendered += ("^" if variance == "up" else "_")
+        rendered += "{" + "".join(indices) + "}"
+    return rendered
+
+
+def antisymmetric_pair_latex(base, slots):
+    """Render a raised/lowered component of an originally antisymmetric pair."""
+    (first, first_variance), (second, second_variance) = slots
+    if first_variance == second_variance == "down":
+        return rf"{base}_{{[{first}{second}]}}"
+    if first_variance == second_variance == "up":
+        return rf"{base}^{{[{first}{second}]}}"
+    if first_variance == "down" and second_variance == "up":
+        return rf"{base}_{{{first}}}{{}}^{{{second}}}"
+    if first_variance == "up" and second_variance == "down":
+        return rf"{base}^{{{first}}}{{}}_{{{second}}}"
+    raise ValueError("Unsupported antisymmetric-pair variance")
+
+
+def contracted_factor_key(factor, coordinates, contraction_assignment):
+    pair_assignments = dict(contraction_assignment)
+    indices = []
+    for value in factor.indices:
+        if value in pair_assignments:
+            indices.append(("local-pair", pair_assignments[value]))
+        else:
+            if re.fullmatch(r"[IJ]\d+", value):
+                raise ValueError(f"Unassigned generator-pair index: {value}")
+            indices.append(("coordinate", coordinates.get(value, value)))
+    derivatives = tuple(sorted(coordinates.get(value, value) for value in factor.derivs))
+    return factor.kind, tuple(indices), derivatives
+
+
+def contracted_body_key(
+    derivative_order,
+    monomial,
+    coordinates,
+    contraction_assignment,
+    derivative_indices,
+):
+    factor_keys = tuple(
+        sorted(
+            contracted_factor_key(factor, coordinates, contraction_assignment)
+            for factor in monomial
+        )
+    )
+    external_derivatives = tuple(
+        coordinates.get(value, value) for value in derivative_indices
+    )
+    return derivative_order, factor_keys, external_derivatives
+
+
+def contracted_factor_latex(factor, coordinates, contraction_assignment):
+    pair_assignments = dict(contraction_assignment)
+
+    def pair_slots(label):
+        endpoints = pair_assignments.get(label)
+        if endpoints is None or len(endpoints) != 2:
+            raise ValueError(f"Missing contraction assignment for {label}")
+        return tuple(local_dummy_latex(endpoint) for endpoint in endpoints)
+
+    idx = [latex_index(coordinates.get(value, value)) for value in factor.indices]
+    kind = factor.kind
+    if kind == "H":
+        base = tensor_with_indices_latex(
+            r"\mathcal H", [(idx[0], "up"), (idx[1], "up")]
+        )
+    elif kind == "GammaABC":
+        base = tensor_with_indices_latex(
+            r"\Gamma",
+            [(idx[0], "down"), (idx[1], "down"), (idx[2], "up")],
+        )
+    elif kind in {"GammaLUp", "GammaRUp"}:
+        base = tensor_with_indices_latex(
+            r"\Gamma", [(idx[0], "up"), *pair_slots(factor.indices[1])]
+        )
+    elif kind in {"GammaLDown", "GammaRDown"}:
+        base = tensor_with_indices_latex(
+            r"\Gamma", [(idx[0], "down"), *pair_slots(factor.indices[1])]
+        )
+    elif kind == "Phi":
+        base = tensor_with_indices_latex(
+            r"\Phi", [(idx[0], "down"), *pair_slots(factor.indices[1])]
+        )
+    elif kind == "BarPhi":
+        base = tensor_with_indices_latex(
+            r"\bar\Phi", [(idx[0], "down"), *pair_slots(factor.indices[1])]
+        )
+    elif kind in {"RicL", "RicR"}:
+        base = antisymmetric_pair_latex(
+            r"\mathfrak R", pair_slots(factor.indices[0])
+        )
+    elif kind in {"MixRL", "MixLR"}:
+        base = tensor_with_indices_latex(
+            r"\mathfrak R",
+            [*pair_slots(factor.indices[0]), *pair_slots(factor.indices[1])],
+        )
+    else:
+        raise ValueError(f"Unsupported primitive factor: {kind}")
+    derivatives = "".join(
+        rf"\partial_{{{latex_index(coordinates.get(value, value))}}}"
+        for value in factor.derivs
+    )
+    return derivatives + base
+
+
+def contracted_body_latex(
+    monomial,
+    coordinates,
+    contraction_assignment,
+    derivative_indices,
+):
+    ordered_factors = sorted(
+        monomial,
+        key=lambda factor: contracted_factor_key(
+            factor, coordinates, contraction_assignment
+        ),
+    )
+    factors = [
+        contracted_factor_latex(factor, coordinates, contraction_assignment)
+        for factor in ordered_factors
+    ]
+    factors.extend(
+        rf"\partial_{{{latex_index(coordinates.get(index, index))}}}"
+        for index in derivative_indices
+    )
+    return r"\,".join(factors) if factors else "1"
+
+
+# ---------------------------------------------------------------------------
+# Public trace and cancellation results
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TraceRow:
+    derivative_order: int
+    coefficient: Fraction
+    body_key: tuple
+    body_latex: str
+
+
+@dataclass(frozen=True)
+class TraceResult:
+    field: FieldSpec
+    n: int
+    terms: tuple[TraceRow, ...]
+    provenance_count: int
+    exact_block_count: int
+    primitive_count: int
+
+    @property
+    def term_count(self):
+        return len(self.terms)
+
+    @property
+    def derivative_counts(self):
+        counts = defaultdict(int)
+        for row in self.terms:
+            counts[row.derivative_order] += 1
+        return dict(sorted(counts.items(), reverse=True))
+
+
+@lru_cache(maxsize=None)
+def _build_trace_result(field_name, n):
+    field = resolve_field(field_name)
+    terms = operator_terms(n)
+    combined_rows = defaultdict(Fraction)
+    representative_bodies = {}
+    provenance_count = 0
+
+    for term in terms:
+        slot_traces = slot_trace_expansion(term.word, field.a, field.b)
+        if not slot_traces:
+            continue
+        ordered_monomials = sorted(
+            term.coefficient.terms.items(),
+            key=lambda item: tuple(factor.text() for factor in item[0]),
+        )
+        for monomial, background_coefficient in ordered_monomials:
+            coordinates = coordinate_map(monomial)
+            combined_contractions = defaultdict(Fraction)
+            assignments = {}
+            for slot_coefficient, left_words, right_words in slot_traces:
+                provenance_contractions = defaultdict(Fraction)
+                for clifford_coefficient, eta_monomial in slot_eta_expansion(
+                    left_words, right_words, term.word, monomial
+                ):
+                    contraction_assignment = absorb_eta_contraction(
+                        monomial, term.word, eta_monomial
+                    )
+                    provenance_contractions[contraction_assignment] += (
+                        clifford_coefficient
+                    )
+                    combined_contractions[contraction_assignment] += (
+                        slot_coefficient * clifford_coefficient
+                    )
+                    assignments[contraction_assignment] = contraction_assignment
+                provenance_count += sum(
+                    1 for coefficient in provenance_contractions.values() if coefficient
+                )
+
+            for contraction_key, trace_coefficient in sorted(
+                combined_contractions.items()
+            ):
+                if not trace_coefficient:
+                    continue
+                contraction_assignment = assignments[contraction_key]
+                row_key = contracted_body_key(
+                    term.derivative_order,
+                    monomial,
+                    coordinates,
+                    contraction_assignment,
+                    term.derivative_indices,
+                )
+                combined_rows[row_key] += background_coefficient * trace_coefficient
+                representative_bodies.setdefault(
+                    row_key,
+                    contracted_body_latex(
+                        monomial,
+                        coordinates,
+                        contraction_assignment,
+                        term.derivative_indices,
+                    ),
+                )
+
+    rows = tuple(
+        TraceRow(row_key[0], coefficient, row_key, representative_bodies[row_key])
+        for row_key, coefficient in sorted(
+            combined_rows.items(), key=lambda item: (-item[0][0], repr(item[0]))
+        )
+        if coefficient
+    )
+    primitive_count = sum(len(term.coefficient.terms) for term in terms)
+    return TraceResult(
+        field=field,
+        n=n,
+        terms=rows,
+        provenance_count=provenance_count,
+        exact_block_count=len(terms),
+        primitive_count=primitive_count,
+    )
+
+
+def build_trace_result(field, n):
+    """Return the exact final ledger without printing it."""
+    resolved = resolve_field(field)
+    if n not in {1, 2}:
+        raise ValueError("Only n=1 and n=2 are implemented exactly")
+    return _build_trace_result(resolved.name, int(n))
+
+
+FIELD_LATEX = {
+    "T": r"T",
+    "phi": r"\phi",
+    "BLL": r"B_{LL}",
+    "BRR": r"B_{RR}",
+    "UL": r"U_L",
+    "UR": r"U_R",
+    "ULLR": r"U_{LLR}",
+    "ULRR": r"U_{LRR}",
+    "B": r"B",
+    "U": r"U",
+    "chi": r"\chi",
+}
+
+
+def trace_lhs_latex(result):
+    power = r"\Box" if result.n == 1 else r"\Box\circ\Box"
+    return rf"\operatorname{{tr}}_{{{FIELD_LATEX[result.field.name]}}}\!\left({power}\right)"
+
+
+def signed_latex_term(coefficient, body, first=False):
+    coefficient = Fraction(coefficient)
+    magnitude = abs(coefficient)
+    scalar = "" if magnitude == 1 else fraction_latex(magnitude) + r"\,"
+    if first:
+        sign = "-" if coefficient < 0 else ""
+    else:
+        sign = r"{}-" if coefficient < 0 else r"{}+"
+    return sign + scalar + body
+
+
+def _in_ipython():
+    if callable(globals().get("display")) and globals().get("LaTeXString") is not None:
+        return True
+    try:
+        return get_ipython() is not None
+    except NameError:
+        return False
+
+
+def _display_latex_chunks(chunks):
+    cadabra_display = globals().get("display")
+    latex_string = globals().get("LaTeXString")
+    if callable(cadabra_display) and latex_string is not None:
+        for chunk in chunks:
+            cadabra_display(latex_string(chunk))
+        return
+
+    from IPython.display import Math, display
+
+    for chunk in chunks:
+        display(Math(chunk))
+
+
+def _trace_latex_chunks(result, terms_per_chunk=20):
+    if terms_per_chunk < 1:
+        raise ValueError("terms_per_chunk must be positive")
+    lhs = trace_lhs_latex(result)
+    chunks = []
+    for start in range(0, len(result.terms), terms_per_chunk):
+        selected = result.terms[start : start + terms_per_chunk]
+        lines = []
+        for offset, row in enumerate(selected):
+            absolute_index = start + offset
+            if absolute_index == 0:
+                prefix = lhs + "&="
+                rendered = signed_latex_term(row.coefficient, row.body_latex, first=True)
+            else:
+                prefix = r"&\quad"
+                rendered = signed_latex_term(row.coefficient, row.body_latex)
+            lines.append(prefix + rendered)
+        chunks.append(r"\begin{aligned}" + r"\\".join(lines) + r"\end{aligned}")
+    return chunks
+
+
+def trace_terms(field, n, show=True, terms_per_chunk=20):
+    """Generate and print *every* final term for one field and n=1 or n=2.
+
+    The returned coefficients are unweighted finite-dimensional raw-field
+    representation traces.  ``show=True`` never abbreviates or elides terms.
+    """
+    result = build_trace_result(field, int(n))
+    if show:
+        header = (
+            f"{result.field.name}, n={result.n}: {result.term_count} final terms "
+            f"({result.provenance_count} pre-coalescing rows; "
+            f"{result.exact_block_count} ordered blocks; "
+            f"{result.primitive_count} coefficient primitives)"
+        )
+        print(header)
+        if _in_ipython():
+            _display_latex_chunks(_trace_latex_chunks(result, terms_per_chunk))
+        else:
+            for index, row in enumerate(result.terms, 1):
+                print(
+                    f"[{index:04d}] d{row.derivative_order}: "
+                    f"{fraction_text(row.coefficient)} * {row.body_latex}"
+                )
+    return result
+
+
+@dataclass(frozen=True)
+class CancellationRow:
+    symbol: str
+    derivative_order: int
+    body_key: tuple
+    body_latex: str
+    contributions: tuple[tuple[str, Fraction], ...]
+    residual: Fraction
+
+
+@dataclass(frozen=True)
+class CombinationResult:
+    n: int
+    combination: tuple[tuple[FieldSpec, Fraction], ...]
+    field_results: tuple[TraceResult, ...]
+    terms: tuple[tuple[str, Fraction, TraceRow], ...]
+    ledger: tuple[CancellationRow, ...]
+    cadabra_expanded_sum: object
+    cadabra_precollection_terms: int
+    cadabra_residual: object
+
+    @property
+    def term_count(self):
+        return len(self.terms)
+
+    @property
+    def canonical_keys(self):
+        return len(self.ledger)
+
+    @property
+    def zero_keys(self):
+        return sum(row.residual == 0 for row in self.ledger)
+
+    @property
+    def residual(self):
+        return self.cadabra_residual
+
+    @property
+    def is_zero(self):
+        return self.zero_keys == self.canonical_keys and self.cadabra_residual == 0
+
+
+def normalize_combination(combination):
+    if isinstance(combination, dict):
+        items = combination.items()
+    else:
+        items = combination
+    combined = defaultdict(Fraction)
+    for item in items:
+        if isinstance(item, str):
+            field = resolve_field(item)
+            weight = DEFAULT_WEIGHTS[field.name]
+        else:
+            field_value, weight = item
+            field = resolve_field(field_value)
+            weight = Fraction(weight)
+        combined[field.name] += weight
+    normalized = tuple(
+        (FIELD_SPECS[name], weight)
+        for name, weight in combined.items()
+        if weight
+    )
+    if not normalized:
+        raise ValueError("The field combination is empty")
+    return normalized
+
+
+def _cadabra_field_expression(result, symbols):
+    if not result.terms:
+        return Ex("0")
+    rendered = []
+    for row in result.terms:
+        scalar = fraction_text(row.coefficient)
+        rendered.append(f"{scalar} {symbols[row.body_key]}")
+    return Ex(" + ".join(rendered))
+
+
+def _cadabra_weighted_sum(field_results, normalized, symbols):
+    total = Ex("0")
+    for result, (_field, weight) in zip(field_results, normalized):
+        field_expression = _cadabra_field_expression(result, symbols)
+        weighted = Ex(fraction_text(weight)) * field_expression.copy()
+        total += weighted
+    distribute(total)
+    expanded_sum = total.copy()
+    if expanded_sum == 0:
+        precollection_terms = 0
+    else:
+        precollection_terms = sum(1 for _node in expanded_sum.top().terms())
+    canonicalise(total)
+    collect_terms(total)
+    return expanded_sum, precollection_terms, total
+
+
+def _ledger_latex_chunks(ledger, terms_per_chunk=8):
+    chunks = []
+    for start in range(0, len(ledger), terms_per_chunk):
+        lines = []
+        for row in ledger[start : start + terms_per_chunk]:
+            contributions = []
+            for field_name, coefficient in row.contributions:
+                scalar = fraction_latex(coefficient)
+                contributions.append(rf"\left({scalar}\right)_{{{FIELD_LATEX[field_name]}}}")
+            sum_latex = "+".join(contributions).replace("+-", "-") or "0"
+            lines.append(
+                rf"{row.symbol}&:\quad {sum_latex}={fraction_latex(row.residual)},"
+                rf"\qquad {row.symbol}\equiv {row.body_latex}"
+            )
+        chunks.append(r"\begin{aligned}" + r"\\".join(lines) + r"\end{aligned}")
+    return chunks
+
+
+def sum_trace_combination(
+    combination,
+    n,
+    show=True,
+    show_field_traces=True,
+    show_cancellation_ledger=True,
+    terms_per_chunk=20,
+):
+    """Fully expand, weight and Cadabra-collect a field combination.
+
+    One weight multiplies the complete trace of each field.  No separate
+    weights are assigned to individual tensor structures.  The final Cadabra
+    expression is built from every input row before ``collect_terms`` is run.
+    """
+    n = int(n)
+    normalized = normalize_combination(combination)
+    field_results = tuple(
+        trace_terms(field, n, show=show and show_field_traces, terms_per_chunk=terms_per_chunk)
+        for field, _weight in normalized
+    )
+
+    union_keys = sorted(
+        {row.body_key for result in field_results for row in result.terms},
+        key=lambda key: (-key[0], repr(key)),
+    )
+    symbols = {key: f"K{index:04d}" for index, key in enumerate(union_keys, 1)}
+    bodies = {
+        row.body_key: row.body_latex
+        for result in field_results
+        for row in result.terms
+    }
+    expanded_terms = tuple(
+        (result.field.name, weight, row)
+        for result, (_field, weight) in zip(field_results, normalized)
+        for row in result.terms
+    )
+
+    field_coefficients = {
+        result.field.name: {row.body_key: row.coefficient for row in result.terms}
+        for result in field_results
+    }
+    ledger = []
+    for key in union_keys:
+        contributions = []
+        residual = Fraction(0)
+        for field, weight in normalized:
+            unweighted = field_coefficients[field.name].get(key, Fraction(0))
+            if not unweighted:
+                continue
+            weighted = weight * unweighted
+            contributions.append((field.name, weighted))
+            residual += weighted
+        ledger.append(
+            CancellationRow(
+                symbol=symbols[key],
+                derivative_order=key[0],
+                body_key=key,
+                body_latex=bodies[key],
+                contributions=tuple(contributions),
+                residual=residual,
+            )
+        )
+
+    (
+        cadabra_expanded_sum,
+        cadabra_precollection_terms,
+        cadabra_residual,
+    ) = _cadabra_weighted_sum(field_results, normalized, symbols)
+    result = CombinationResult(
+        n=n,
+        combination=normalized,
+        field_results=field_results,
+        terms=expanded_terms,
+        ledger=tuple(ledger),
+        cadabra_expanded_sum=cadabra_expanded_sum,
+        cadabra_precollection_terms=cadabra_precollection_terms,
+        cadabra_residual=cadabra_residual,
+    )
+
+    if show:
+        print(
+            f"Combination n={n}: {result.term_count} fully expanded input terms -> "
+            f"{result.canonical_keys} complete tensor bodies; "
+            f"{result.zero_keys}/{result.canonical_keys} exact coefficient sums are zero."
+        )
+        print(
+            "Cadabra pre-collection summands: "
+            f"{result.cadabra_precollection_terms}"
+        )
+        if show_cancellation_ledger:
+            if _in_ipython():
+                _display_latex_chunks(_ledger_latex_chunks(result.ledger))
+            else:
+                for row in result.ledger:
+                    pieces = " + ".join(
+                        f"{fraction_text(value)}[{name}]"
+                        for name, value in row.contributions
+                    )
+                    print(
+                        f"{row.symbol}: {pieces} = {fraction_text(row.residual)}; "
+                        f"body = {row.body_latex}"
+                    )
+        print(f"Cadabra collect_terms residual: {cadabra_residual}")
+        print("PASS: exact cancellation" if result.is_zero else "FAIL: nonzero residual")
+    return result
+
+
+__all__ = [
+    "FIELD_SPECS",
+    "EIGHT_FIELD_COMBINATION",
+    "FOUR_FIELD_COMBINATION",
+    "TraceRow",
+    "TraceResult",
+    "CombinationResult",
+    "trace_terms",
+    "sum_trace_combination",
+    "build_trace_result",
+]

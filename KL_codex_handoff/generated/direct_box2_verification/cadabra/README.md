@@ -1,58 +1,101 @@
-# Cadabra2 verification notebook
+# Cadabra2 full Box-trace verification
 
-This directory contains an independent Cadabra2/Jupyter starting point for the
-Box trace calculation.
+This directory contains a self-contained Cadabra2/Jupyter recalculation of the
+fully expanded finite-dimensional representation traces for `n=1` and `n=2`.
+It does not import the existing Python verifier, renderer, CSV files, or their
+precomputed term lists.
 
 ## Environment
 
-The supported setup used here is:
+The tested environment is:
 
 - Windows 11 host
 - WSL2 with Ubuntu 24.04
-- Cadabra 2.5.14 official Ubuntu package
-- Jupyter Notebook running inside WSL and opened from the Windows browser
+- Cadabra 2.5.14
+- Jupyter Notebook using the `Cadabra2` kernel
 
-The installation script pins both the official package URL and its SHA-256
-checksum. Run it from Windows PowerShell with WSL root privileges:
+If Cadabra is not installed, run `install_cadabra_wsl.sh` as root inside the
+Ubuntu-24.04 WSL distribution. Then double-click `run_cadabra_jupyter.cmd` and
+keep its terminal open. Jupyter is bound to `127.0.0.1`; keep token
+authentication enabled.
 
-```powershell
-wsl.exe -d Ubuntu-24.04 -u root -- bash "/mnt/c/Users/artur/OneDrive/문서/추가 계싼/KL_codex_handoff/generated/direct_box2_verification/cadabra/install_cadabra_wsl.sh"
+## Main files
+
+- `full_trace_calculator.cdb` — independent full expansion engine and public
+  `trace_terms(field,n)` / `sum_trace_combination(combination,n)` functions.
+- `full_trace_verification.ipynb` — interactive calculator. Its default cells
+  print all 404 terms of `T,n=2`, all 1,994 rows of the eight-field sum, and all
+  404 coefficientwise cancellation identities.
+- `verify_full_trace.cdb` — headless acceptance suite, including an independent
+  Cadabra gamma-algebra comparison and a perturbed-weight negative control.
+- `box2_verification.ipynb` and `verify_box2_smoke.cdb` — the earlier compact
+  first-stage smoke checks.
+
+## Interactive use
+
+Open `full_trace_verification.ipynb` with the Cadabra2 kernel. The two public
+calls are:
+
+```python
+trace_terms("T", 2)
+
+sum_trace_combination(EIGHT_FIELD_COMBINATION, 2)
 ```
 
-After installation, double-click `run_cadabra_jupyter.cmd`. Keep its terminal
-open and open the tokenised `http://127.0.0.1:8888/...` URL that it prints.
-Do not disable Jupyter's token authentication.
+`trace_terms` accepts `T`, `phi`, `BLL`, `BRR`, `UL`, `UR`, `ULLR`, `ULRR`,
+and the four-field representations `B`, `U`, `chi`. Only `n=1` and `n=2` are
+implemented; other values fail explicitly.
 
-## Files
+One overall weight multiplies each field's complete trace. Individual tensor
+terms do not receive independently chosen weights.
 
-- `box2_verification.ipynb`: explanatory notebook using the Cadabra2 kernel.
-- `verify_box2_smoke.cdb`: the same first-stage checks for command-line use.
-- `install_cadabra_wsl.sh`: pinned Ubuntu installer.
-- `run_cadabra_jupyter.cmd`: Windows launcher for the WSL Jupyter server.
+## Headless verification
 
-Headless smoke test inside WSL:
+Run from this directory inside WSL:
 
 ```bash
-cd /mnt/c/Users/artur/OneDrive/문서/추가\ 계싼/KL_codex_handoff/generated/direct_box2_verification/cadabra
-cadabra2 verify_box2_smoke.cdb
+cadabra2 -q verify_full_trace.cdb
 ```
 
-## What is verified in this first stage
+Acceptance goldens:
 
-1. Antisymmetric-tensor canonicalisation.
-2. A basic ordered Clifford multiplication identity.
-3. Exact cancellation of all six n=2 representation moments for the proposed
-   four-field combination.
-4. Exact cancellation of the same moments for the original eight-field
-   combination.
-5. A perturbed-weight negative control which must remain nonzero.
+- universal `n=1`: 9 ordered blocks / 23 coefficient primitives;
+- universal `n=2`: 118 ordered blocks / 867 coefficient primitives;
+- eight fields, `n=2`: 1,994 expanded rows -> 404 complete tensor bodies ->
+  404/404 exact zeros -> Cadabra residual `0`;
+- four fields, `n=2`: 1,404 expanded rows -> 404 complete tensor bodies ->
+  404/404 exact zeros -> Cadabra residual `0`;
+- changing one weight from `-1/64` to `-1/63` leaves 404 nonzero residuals.
 
-These checks use exact rational arithmetic, not floating point arithmetic.
+The suite also has Cadabra independently evaluate traces of two, three, and
+four bivector gamma matrices. Their complete 2/8/60 metric-pairing maps agree
+coefficient-by-coefficient with the standalone recursion used by the engine.
 
-## Scope
+## What “full expansion” means
 
-This is an independent first-stage verification of the algebraic ingredients.
-It does **not yet** independently rederive the 118 ordered `Box^2` blocks or all
-404 canonical contracted terms. That full Cadabra encoding is the next phase;
-until it exists, this notebook must not be described as a complete independent
-recalculation of the full operator expansion.
+The engine starts from the single-Box coefficient blocks, composes ordered
+differential operators with the complete Leibniz rule, expands total
+generators into raw left/right spinor slots, applies the right-sector reversal
+and `-1/2` normalization, evaluates every chiral Clifford trace, and absorbs
+all local metrics into explicit upper/lower Einstein dummy indices. Final rows
+contain only the paper-level `H`, `Gamma`, `Phi`, barred `Phi`, curvature and
+ordinary-partial notation; no covariant-D, total-generator, gamma-trace, eta,
+or moment shorthand remains.
+
+Cadabra receives every weighted final row before `collect_terms` is called.
+The notebook displays a `K0001...K0404` audit label for each complete tensor
+body and prints the exact field-by-field rational coefficient sum together
+with the full body represented by that label.
+
+## Scope and caveat
+
+This proves coefficientwise cancellation for D=10, `dim S=dim Sbar=16`,
+density weight zero, unprojected raw tensor products, and a common universal
+background/operator. It is a finite-dimensional representation trace before
+the functional/momentum trace.
+
+It does not by itself include irreducible projections, field-dependent masses,
+statistics, chirality/reality/Pfaffian normalisations, gauge fixing, ghosts, or
+the regulator. The same numerical relative weights also cancel the algebraic
+`n=1` representation trace, but physical one-loop `n=1` determinant weights
+may differ because their mass powers and other prefactors are n-dependent.

@@ -16,7 +16,12 @@ mkdir -p "${DOWNLOAD_DIR}"
 cd "${DOWNLOAD_DIR}"
 
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl jupyter-notebook python3-ipykernel
+sudo apt-get install -y \
+  ca-certificates \
+  curl \
+  jupyter-notebook \
+  jupyter-nbconvert \
+  python3-ipykernel
 
 curl --fail --location --output "${CADABRA_DEB}" "${CADABRA_URL}"
 printf '%s  %s\n' "${CADABRA_SHA256}" "${CADABRA_DEB}" | sha256sum --check --strict
