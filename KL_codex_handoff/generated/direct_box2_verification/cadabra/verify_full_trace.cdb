@@ -3,6 +3,7 @@
 from collections import Counter
 from fractions import Fraction
 from pathlib import Path
+import re
 
 from cadabra2 import *
 
@@ -185,13 +186,28 @@ assert tuple(variable.term_count for variable in prepared8.variables) == (
     404, 14, 192, 192, 192, 192, 404, 404
 )
 F1, F2, F3, F4, F5, F6, F7, F8 = prepared8.weighted_expressions
+for variable, expression in zip(prepared8.variables, (F1, F2, F3, F4, F5, F6, F7, F8)):
+    assert cadabra_term_count(expression) == variable.term_count, (
+        variable.name, cadabra_term_count(expression), variable.term_count
+    )
+    assert re.search(r"\bK\d{4}\b", str(expression)) is None, variable.name
+    assert re.search(r"\bK\d{4}\b", expression._latex_()) is None, variable.name
+    for row_number, row in enumerate(variable.trace_result.terms, 1):
+        assert tuple(row.body_expression.top().free_indices()) == (), (
+            variable.name, row_number, cadabra_body_source(row.body_key)
+        )
+actual_tensor_source = " ".join(
+    expression._latex_() for expression in (F1, F2, F3, F4, F5, F6, F7, F8)
+)
+for actual_head in ("H", "Gamma", "Phi", "Rfrak", r"\partial"):
+    assert actual_head in actual_tensor_source, actual_head
 totalTr = F1 + F2 + F3 + F4 + F5 + F6 + F7 + F8
 assert cadabra_term_count(totalTr) == 1994
 distribute(totalTr)
 canonicalise(totalTr)
 collect_terms(totalTr)
 assert totalTr == 0
-print("PASS visible workflow: totalTr = F1 + ... + F8 -> 0")
+print("PASS visible actual-tensor workflow: totalTr = F1 + ... + F8 -> 0")
 
 
 prepared8_n1 = prepare_field_variables(EIGHT_FIELD_COMBINATION, 1, show=False)
@@ -253,10 +269,21 @@ print("PASS same numerical relative weights also cancel the representation n=1 t
 bad_combination = list(EIGHT_FIELD_COMBINATION)
 bad_combination[-2] = ("ULLR", Fraction(-1, 63))
 negative_control = sum_trace_combination(bad_combination, 2, show=False)
-assert negative_control.cadabra_residual != 0
-assert not negative_control.is_zero
-assert expression_term_count(negative_control.cadabra_residual) == 404
-print("PASS negative control: changing -1/64 to -1/63 leaves 404 residuals")
+assert negative_control.cadabra_residual != 0, "negative residual vanished"
+assert not negative_control.is_zero, "negative control reported zero"
+assert negative_control.canonical_keys == 404
+assert negative_control.zero_keys == 0
+# The conservative audit keeps all 404 complete AST bodies distinct.  Once
+# genuine tensor indices and commuting PD derivatives are canonicalised,
+# Cadabra identifies 358 independent nonzero tensor structures.
+assert expression_term_count(negative_control.cadabra_residual) == 358, (
+    expression_term_count(negative_control.cadabra_residual),
+    negative_control.canonical_keys,
+)
+print(
+    "PASS negative control: changing -1/64 to -1/63 leaves "
+    "404 nonzero ledger rows / 358 Cadabra-canonical tensor residuals"
+)
 
 
 print("ALL FULL-TRACE CADABRA TESTS PASSED")

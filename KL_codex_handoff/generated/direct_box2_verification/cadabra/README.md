@@ -53,7 +53,11 @@ assert totalTr == 0
 The input cell contains `N` and the eight explicit `(field, weight)` tuples,
 so both can be edited before the later cells are run. `prepare_field_variables`
 prints every fully Einstein-contracted term before storing the weighted
-Cadabra expressions in `F1` through `F8`.
+Cadabra expressions in `F1` through `F8`. Those variables contain the actual
+`H`, `Gamma`, `Phi`, `BarPhi`, `Rfrak`, and partial-derivative tensor ASTs;
+`K0001...` labels are never used inside the expressions. External
+right-acting derivatives are represented by their action on one common
+arbitrary scalar `Probe`, so every Cadabra term is a fully contracted scalar.
 
 `trace_terms` accepts `T`, `phi`, `BLL`, `BRR`, `UL`, `UR`, `ULLR`, `ULRR`,
 and the four-field representations `B`, `U`, `chi`. Only `n=1` and `n=2` are
@@ -78,7 +82,9 @@ Acceptance goldens:
   404/404 exact zeros -> Cadabra residual `0`;
 - four fields, `n=2`: 1,404 expanded rows -> 404 complete tensor bodies ->
   404/404 exact zeros -> Cadabra residual `0`;
-- changing one weight from `-1/64` to `-1/63` leaves 404 nonzero residuals.
+- changing one weight from `-1/64` to `-1/63` leaves all 404 conservative
+  ledger rows nonzero (358 structures after Cadabra also identifies commuting
+  derivative/dummy-index equivalences).
 
 The suite also has Cadabra independently evaluate traces of two, three, and
 four bivector gamma matrices. Their complete 2/8/60 metric-pairing maps agree
@@ -96,10 +102,11 @@ contain only the paper-level `H`, `Gamma`, `Phi`, barred `Phi`, curvature and
 ordinary-partial notation; no covariant-D, total-generator, gamma-trace, eta,
 or moment shorthand remains.
 
-Cadabra receives every weighted final row before `collect_terms` is called.
-The notebook displays a `K0001...K0404` audit label for each complete tensor
-body and prints the exact field-by-field rational coefficient sum together
-with the full body represented by that label.
+Cadabra receives every weighted final tensor expression before `collect_terms`
+is called. The notebook separately displays a `K0001...K0404` audit row number
+for each complete tensor body and prints the exact field-by-field rational
+coefficient sum together with the full body represented by that row number.
+These row numbers are presentation metadata only and do not occur in `F1`–`F8`.
 
 ## Scope and caveat
 

@@ -44,6 +44,8 @@ input cell sets `N` and the eight `(field, weight)` pairs. The notebook displays
 the direct Box definition and every field-specialized Box, stores the fully
 expanded weighted traces in `F1` through `F8`, and visibly executes
 `totalTr = F1 + ... + F8` before Cadabra collects the exact residual. The
+`F` variables contain the actual contracted tensor and partial-derivative
+expressions rather than symbolic row aliases. The
 headless full test is:
 
 ```bash

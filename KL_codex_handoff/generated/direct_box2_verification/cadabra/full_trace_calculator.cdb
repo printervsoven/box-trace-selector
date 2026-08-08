@@ -23,10 +23,51 @@ from functools import lru_cache
 from itertools import product
 import re
 
-from cadabra2 import Ex, canonicalise, collect_terms, distribute
+from cadabra2 import (
+    Depends,
+    Ex,
+    Indices,
+    LaTeXForm,
+    PartialDerivative,
+    canonicalise,
+    collect_terms,
+    distribute,
+)
 
 
 D_SPIN = 16
+
+
+# This file is deliberately valid ordinary Python so the notebook and the
+# headless verifier can load the exact same source with ``exec``.  Cadabra
+# notebooks may replace ``__cdbkernel__`` with ``create_scope()`` after this
+# module is loaded, so properties are installed lazily in the current scope.
+_CADABRA_PROPERTY_SCOPE = None
+
+
+def _ensure_cadabra_tensor_properties():
+    global _CADABRA_PROPERTY_SCOPE
+    current_scope = globals().get("__cdbkernel__")
+    if _CADABRA_PROPERTY_SCOPE is current_scope:
+        return
+    Indices(
+        Ex("{A,B,C,D,E,M,N,P,Q,R,S,U,V,W,X,Y,Z}"),
+        Ex("coordinate, position=fixed"),
+    )
+    Indices(Ex("{l0,l1,l2,l3}"), Ex("left_lorentz, position=fixed"))
+    Indices(Ex("{r0,r1,r2,r3}"), Ex("right_lorentz, position=fixed"))
+    PartialDerivative(Ex("PD{#}"), Ex(""))
+    Depends(
+        Ex("{H,Gamma,Phi,BarPhi,Rfrak,Probe}"),
+        Ex("PD{#}"),
+    )
+    LaTeXForm(Ex("PD{#}"), Ex(r"\partial"))
+    # Keep the actual scope object, not only id(scope): retaining it prevents
+    # Python from reusing an old numeric id after repeated notebook resets.
+    _CADABRA_PROPERTY_SCOPE = current_scope
+
+
+_ensure_cadabra_tensor_properties()
 
 
 # Cadabra's default front-end hook may collect an assigned expression before
@@ -1046,6 +1087,16 @@ class TraceRow:
     body_key: tuple
     body_latex: str
 
+    @property
+    def body_expression(self):
+        """The complete tensor/differential-operator body as a Cadabra Ex."""
+        return cadabra_body_expression(self.body_key)
+
+    @property
+    def expression(self):
+        """This complete trace row, including its exact rational coefficient."""
+        return Ex(fraction_text(self.coefficient)) * self.body_expression
+
 
 @dataclass(frozen=True)
 class TraceResult:
@@ -1527,14 +1578,146 @@ def normalize_combination(combination):
     return normalized
 
 
-def _cadabra_field_expression(result, symbols):
+_CADABRA_FACTOR_HEAD = {
+    "H": "H",
+    "GammaABC": "Gamma",
+    "GammaLUp": "Gamma",
+    "GammaRUp": "Gamma",
+    "GammaLDown": "Gamma",
+    "GammaRDown": "Gamma",
+    "Phi": "Phi",
+    "BarPhi": "BarPhi",
+    "RicL": "Rfrak",
+    "RicR": "Rfrak",
+    "MixRL": "Rfrak",
+    "MixLR": "Rfrak",
+}
+
+
+# One entry for every item in the factor-key index tuple.  ``None`` denotes
+# a local antisymmetric pair, whose two endpoint variances are already stored
+# explicitly by the eta-absorption stage.
+_CADABRA_FACTOR_INDEX_SHAPE = {
+    "H": ("up", "up"),
+    "GammaABC": ("down", "down", "up"),
+    "GammaLUp": ("up", None),
+    "GammaRUp": ("up", None),
+    "GammaLDown": ("down", None),
+    "GammaRDown": ("down", None),
+    "Phi": ("down", None),
+    "BarPhi": ("down", None),
+    "RicL": (None,),
+    "RicR": (None,),
+    "MixRL": (None, None),
+    "MixLR": (None, None),
+}
+
+
+def _cadabra_local_index(endpoint):
+    sector, edge_number, variance = endpoint
+    if sector not in {"L", "R"}:
+        raise ValueError(f"Unsupported local-index sector: {sector}")
+    if not 0 <= edge_number < 4:
+        raise ValueError(f"Unsupported local-index edge: {edge_number}")
+    if variance not in {"down", "up"}:
+        raise ValueError(f"Unsupported local-index variance: {variance}")
+    prefix = "l" if sector == "L" else "r"
+    return f"{prefix}{edge_number}", variance
+
+
+def _cadabra_indexed_tensor(head, slots):
+    """Build a parser-safe Cadabra tensor while preserving slot variance."""
+    if not slots:
+        return head
+    groups = []
+    for index, variance in slots:
+        if variance not in {"down", "up"}:
+            raise ValueError(f"Unsupported tensor-index variance: {variance}")
+        if groups and groups[-1][0] == variance:
+            groups[-1][1].append(index)
+        else:
+            groups.append((variance, [index]))
+    source = head
+    for variance, indices in groups:
+        marker = "^" if variance == "up" else "_"
+        source += marker + "{" + " ".join(indices) + "}"
+    return source
+
+
+def _cadabra_factor_source(factor_key):
+    kind, indices, derivatives = factor_key
+    if kind not in _CADABRA_FACTOR_HEAD:
+        raise ValueError(f"Unsupported primitive factor: {kind}")
+    shape = _CADABRA_FACTOR_INDEX_SHAPE[kind]
+    if len(indices) != len(shape):
+        raise ValueError(f"Malformed {kind} factor key")
+
+    slots = []
+    for descriptor, expected_variance in zip(indices, shape):
+        descriptor_kind, value = descriptor
+        if descriptor_kind == "coordinate":
+            if expected_variance not in {"down", "up"}:
+                raise ValueError(f"Coordinate in a pair slot of {kind}")
+            slots.append((value, expected_variance))
+        elif descriptor_kind == "local-pair":
+            if expected_variance is not None or len(value) != 2:
+                raise ValueError(f"Malformed local pair in {kind}")
+            slots.extend(_cadabra_local_index(endpoint) for endpoint in value)
+        else:
+            raise ValueError(f"Unsupported factor-key index: {descriptor_kind}")
+
+    source = _cadabra_indexed_tensor(_CADABRA_FACTOR_HEAD[kind], slots)
+    # These are genuine Cadabra PartialDerivative applications to the
+    # background tensor.  All tensor heads carry Depends(PD{#}) in the current
+    # scope, so no derivative is discarded as a constant.
+    for derivative in reversed(derivatives):
+        source = f"PD_{{{derivative}}}{{{source}}}"
+    return source
+
+
+@lru_cache(maxsize=None)
+def cadabra_body_source(body_key):
+    """Return the parser source for one complete canonical tensor body."""
+    derivative_order, factors, external_derivatives = body_key
+    if derivative_order != len(external_derivatives):
+        raise ValueError("Derivative order and external derivative tuple disagree")
+    pieces = [_cadabra_factor_source(factor) for factor in factors]
+    # Represent the differential operator by its action on one common
+    # arbitrary probe.  This makes every derivative index a genuine contracted
+    # Cadabra index while keeping the operator order explicit and preventing
+    # unrelated rows from being mistaken for sums with different free indices.
+    probe = "Probe"
+    for index in reversed(external_derivatives):
+        probe = f"PD_{{{index}}}{{{probe}}}"
+    pieces.append(probe)
+    return " ".join(pieces) if pieces else "1"
+
+
+def cadabra_body_expression(body_key):
+    """Create a fresh Cadabra Ex for a complete tensor body."""
+    _ensure_cadabra_tensor_properties()
+    expression = Ex(cadabra_body_source(body_key))
+    free_indices = tuple(expression.top().free_indices())
+    if free_indices:
+        raise ValueError(
+            "A contracted trace body unexpectedly has free indices: "
+            + ", ".join(str(index) for index in free_indices)
+        )
+    return expression
+
+
+def _cadabra_field_expression(result):
+    """Build one trace from its actual tensor bodies, never K-basis aliases."""
     if not result.terms:
         return Ex("0")
-    rendered = []
+    expression = Ex("0")
     for row in result.terms:
-        scalar = fraction_text(row.coefficient)
-        rendered.append(f"{scalar} {symbols[row.body_key]}")
-    return Ex(" + ".join(rendered))
+        # Parse each scalar body independently before joining the sum.  This
+        # keeps Cadabra's parser from treating the dummy names of unrelated
+        # summands as one shared free-index declaration while preserving every
+        # additive row until the explicit final collect_terms call.
+        expression += row.expression
+    return expression
 
 
 def _weighted_trace_latex_chunks(variable, terms_per_chunk=15):
@@ -1576,9 +1759,11 @@ def prepare_field_variables(
 
     Every variable contains one field's *complete* representation trace
     multiplied by the single overall field weight supplied in ``combination``.
-    All variables share the same K0001... basis, whose full tensor-body map is
-    retained in ``ledger`` and ``bodies``.  No cross-field sum is performed by
-    this function; the caller can therefore execute ``totalTr=F1+...`` visibly.
+    Every F-variable is a genuine Cadabra expression containing H, Gamma,
+    Phi, curvature and ordinary-derivative tensor bodies.  K0001... labels
+    are retained only as human-readable row numbers in the cancellation
+    ledger; they never occur in F1, F2, ... themselves.  No cross-field sum is
+    performed here, so the caller can execute ``totalTr=F1+...`` visibly.
     """
     n = int(n)
     normalized = normalize_combination(combination)
@@ -1629,7 +1814,7 @@ def prepare_field_variables(
     for index, (result, (field, weight)) in enumerate(
         zip(field_results, normalized), 1
     ):
-        unweighted_expression = _cadabra_field_expression(result, symbols)
+        unweighted_expression = _cadabra_field_expression(result)
         weighted_expression = Ex(fraction_text(weight)) * unweighted_expression.copy()
         distribute(weighted_expression)
         variables.append(
@@ -1679,10 +1864,10 @@ def cadabra_term_count(expression):
     return sum(1 for _node in expression.top().terms())
 
 
-def _cadabra_weighted_sum(field_results, normalized, symbols):
+def _cadabra_weighted_sum(field_results, normalized):
     total = Ex("0")
     for result, (_field, weight) in zip(field_results, normalized):
-        field_expression = _cadabra_field_expression(result, symbols)
+        field_expression = _cadabra_field_expression(result)
         weighted = Ex(fraction_text(weight)) * field_expression.copy()
         total += weighted
     distribute(total)
@@ -1742,7 +1927,7 @@ def sum_trace_combination(
         cadabra_expanded_sum,
         cadabra_precollection_terms,
         cadabra_residual,
-    ) = _cadabra_weighted_sum(field_results, normalized, prepared.symbols)
+    ) = _cadabra_weighted_sum(field_results, normalized)
     result = CombinationResult(
         n=n,
         combination=normalized,
@@ -1789,6 +1974,8 @@ __all__ = [
     "FOUR_FIELD_COMBINATION",
     "TraceRow",
     "TraceResult",
+    "cadabra_body_source",
+    "cadabra_body_expression",
     "FieldTraceVariable",
     "FieldVariableSet",
     "CombinationResult",
