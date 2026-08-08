@@ -1,9 +1,11 @@
 """Independent Cadabra2 calculator for the fully expanded Box traces.
 
 This module is deliberately self-contained: it does not import the existing
-``verify_direct_box2.py`` or web renderer.  It encodes the single-Box blocks,
-the ordered differential-operator composition, raw tensor-slot generators,
-the D=10 chiral Clifford trace and the final Einstein contractions directly.
+``verify_direct_box2.py`` or web renderer.  Its executable input is the
+coefficient AST of main.pdf (2.1), (2.2), and (2.6).  From that object it
+normal-orders the single Box, performs the ordered differential-operator
+composition, expands raw tensor-slot generators, evaluates the D=10 chiral
+Clifford trace and carries out the final Einstein contractions.
 
 Public entry points
 -------------------
@@ -17,7 +19,7 @@ Public entry points
 """
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from functools import lru_cache
 from itertools import product
@@ -36,6 +38,187 @@ from cadabra2 import (
 
 
 D_SPIN = 16
+
+
+@dataclass(frozen=True)
+class DeltaDefinition:
+    """Editable coefficient AST for one of main.pdf (2.1) or (2.2).
+
+    The five fields are the five displayed operator structures, after the
+    parenthesis in the second line has been split into its curvature and
+    connection-derivative summands.  Consequently the main.pdf values are
+    ``1, 1, -1, 1/4, 1/2``.  Keeping these numbers in the input object (rather
+    than in the specialised field blocks) is what makes a modified Box flow
+    through the complete trace calculation.
+    """
+
+    laplacian: Fraction
+    ricci_generator: Fraction
+    connection_derivative_generator: Fraction
+    generator_square: Fraction
+    mixed_curvature_generators: Fraction
+
+    def __post_init__(self):
+        for name in (
+            "laplacian",
+            "ricci_generator",
+            "connection_derivative_generator",
+            "generator_square",
+            "mixed_curvature_generators",
+        ):
+            object.__setattr__(self, name, Fraction(getattr(self, name)))
+
+    @classmethod
+    def main_pdf(cls):
+        return cls(
+            laplacian=Fraction(1),
+            ricci_generator=Fraction(1),
+            connection_derivative_generator=Fraction(-1),
+            generator_square=Fraction(1, 4),
+            mixed_curvature_generators=Fraction(1, 2),
+        )
+
+
+@dataclass(frozen=True)
+class MainBoxDefinition:
+    """Executable input form of main.pdf (2.1), (2.2), and (2.6).
+
+    ``delta`` and ``bar_delta`` contain the coefficients typed for (2.1) and
+    (2.2).  ``delta_in_box`` and ``bar_delta_in_box`` are the two coefficients
+    in (2.6); main.pdf therefore uses ``+1`` and ``-1``.  This frozen object is
+    hashable, so traces from distinct definitions are cached independently.
+    """
+
+    delta: DeltaDefinition
+    bar_delta: DeltaDefinition
+    delta_in_box: Fraction
+    bar_delta_in_box: Fraction
+
+    def __post_init__(self):
+        if not isinstance(self.delta, DeltaDefinition):
+            raise TypeError("delta must be a DeltaDefinition")
+        if not isinstance(self.bar_delta, DeltaDefinition):
+            raise TypeError("bar_delta must be a DeltaDefinition")
+        object.__setattr__(self, "delta_in_box", Fraction(self.delta_in_box))
+        object.__setattr__(self, "bar_delta_in_box", Fraction(self.bar_delta_in_box))
+
+    @classmethod
+    def main_pdf(cls):
+        return cls(
+            delta=DeltaDefinition.main_pdf(),
+            bar_delta=DeltaDefinition.main_pdf(),
+            delta_in_box=Fraction(1),
+            bar_delta_in_box=Fraction(-1),
+        )
+
+    def with_term(self, sector, term, coefficient):
+        """Return a copy with one displayed (2.1)/(2.2) coefficient changed."""
+        aliases = {"delta": "delta", "bar_delta": "bar_delta", "bar": "bar_delta"}
+        selected = aliases.get(str(sector).strip().lower())
+        if selected is None:
+            raise KeyError("sector must be 'delta' or 'bar_delta'")
+        allowed = {
+            "laplacian",
+            "ricci_generator",
+            "connection_derivative_generator",
+            "generator_square",
+            "mixed_curvature_generators",
+        }
+        if term not in allowed:
+            raise KeyError(f"Unknown Delta term: {term}")
+        old_delta = getattr(self, selected)
+        new_delta = replace(old_delta, **{term: Fraction(coefficient)})
+        return replace(self, **{selected: new_delta})
+
+    def with_box_weights(self, delta=None, bar_delta=None):
+        """Return a copy with the coefficients in Box=a Delta+b barDelta changed."""
+        changes = {}
+        if delta is not None:
+            changes["delta_in_box"] = Fraction(delta)
+        if bar_delta is not None:
+            changes["bar_delta_in_box"] = Fraction(bar_delta)
+        return replace(self, **changes)
+
+    @property
+    def laplacian_h_scale(self):
+        """H-projected principal coefficient after the section condition.
+
+        D_q D^q and D_barq D^barq have principal symbols P=(J+H)/2
+        and barP=(J-H)/2.  The J component vanishes by main.pdf (3.2), leaving
+        this coefficient multiplying every normal-ordered Laplacian-derived
+        term.
+        """
+        return Fraction(1, 2) * (
+            self.delta_in_box * self.delta.laplacian
+            - self.bar_delta_in_box * self.bar_delta.laplacian
+        )
+
+    @property
+    def section_identity_scale(self):
+        """Coefficient of the removable (Delta+barDelta) section identity.
+
+        Appendix D.12 of main.pdf gives ``(Delta+barDelta)T=0`` under the
+        covariantized section condition.  For arbitrary editable kinetic
+        coefficients we subtract this sigma component before normal ordering;
+        otherwise changing the outer weights would incorrectly retain pieces
+        of an operator which is identically zero in the paper's domain.
+        """
+        return Fraction(1, 2) * (
+            self.delta_in_box * self.delta.laplacian
+            + self.bar_delta_in_box * self.bar_delta.laplacian
+        )
+
+    @property
+    def literal_box_coefficients(self):
+        """Nine section-reduced coefficients used by normal ordering."""
+        sigma = self.section_identity_scale
+        return {
+            "kinetic_difference": self.laplacian_h_scale,
+            "left_ricci": (
+                self.delta_in_box * self.delta.ricci_generator - sigma
+            ),
+            "left_connection": (
+                self.delta_in_box * self.delta.connection_derivative_generator
+                + sigma
+            ),
+            "left_square": (
+                self.delta_in_box * self.delta.generator_square
+                - Fraction(1, 4) * sigma
+            ),
+            "mixed_RL": (
+                self.delta_in_box * self.delta.mixed_curvature_generators
+                - Fraction(1, 2) * sigma
+            ),
+            "right_ricci": (
+                self.bar_delta_in_box * self.bar_delta.ricci_generator
+                - sigma
+            ),
+            "right_connection": (
+                self.bar_delta_in_box
+                * self.bar_delta.connection_derivative_generator
+                + sigma
+            ),
+            "right_square": (
+                self.bar_delta_in_box * self.bar_delta.generator_square
+                - Fraction(1, 4) * sigma
+            ),
+            "mixed_LR": (
+                self.bar_delta_in_box
+                * self.bar_delta.mixed_curvature_generators
+                - Fraction(1, 2) * sigma
+            ),
+        }
+
+
+MAIN_PDF_BOX = MainBoxDefinition.main_pdf()
+
+
+def resolve_box_definition(box_definition=None):
+    if box_definition is None:
+        return MAIN_PDF_BOX
+    if not isinstance(box_definition, MainBoxDefinition):
+        raise TypeError("box_definition must be a MainBoxDefinition")
+    return box_definition
 
 
 # This file is deliberately valid ordinary Python so the notebook and the
@@ -188,6 +371,17 @@ def dH(first, second, *derivatives):
     return F("H", first, second, derivs=derivatives)
 
 
+def principal_H(first, second, box_definition):
+    return resolve_box_definition(box_definition).laplacian_h_scale * H(first, second)
+
+
+def principal_dH(first, second, box_definition, *derivatives):
+    return (
+        resolve_box_definition(box_definition).laplacian_h_scale
+        * dH(first, second, *derivatives)
+    )
+
+
 def GammaABC(first, second, upper):
     return F("GammaABC", first, second, upper)
 
@@ -232,98 +426,121 @@ def MixLR(left_pair, right_pair):
     return F("MixLR", left_pair, right_pair)
 
 
-# The following eight blocks are the A and B coefficients of the specialized
-# single Box.  Every dummy label is local to one call.
-def block_h(coordinate):
+# These functions derive the normal-ordered coefficients from the executable
+# main.pdf input.  There is no separate h/u/... input: changing the
+# MainBoxDefinition changes the Polynomials produced here and every downstream
+# trace row.
+def block_h(coordinate, box_definition):
+    box_definition = resolve_box_definition(box_definition)
     first, second = fresh.index("m"), fresh.index("n")
-    return H(first, second) * GammaABC(first, second, coordinate)
-
-
-def block_u(coordinate, pair):
-    dummy = fresh.index("m")
-    return H(coordinate, dummy) * Phi(dummy, pair) - GammaLUp(coordinate, pair)
-
-
-def block_v(coordinate, pair):
-    dummy = fresh.index("m")
-    return H(coordinate, dummy) * BarPhi(dummy, pair) + GammaRUp(coordinate, pair)
-
-
-def block_p(pair):
-    first, second, upper = fresh.index("m"), fresh.index("n"), fresh.index("c")
     return (
-        RicL(pair)
-        + Fraction(1, 2) * H(first, second) * Phi(second, pair).derivative(first)
-        + Fraction(1, 2)
+        box_definition.laplacian_h_scale
+        * H(first, second)
+        * GammaABC(first, second, coordinate)
+    )
+
+
+def block_u(coordinate, pair, box_definition):
+    box_definition = resolve_box_definition(box_definition)
+    coefficients = box_definition.literal_box_coefficients
+    dummy = fresh.index("m")
+    return (
+        box_definition.laplacian_h_scale
+        * H(coordinate, dummy)
+        * Phi(dummy, pair)
+        + coefficients["left_connection"] * GammaLUp(coordinate, pair)
+    )
+
+
+def block_v(coordinate, pair, box_definition):
+    box_definition = resolve_box_definition(box_definition)
+    coefficients = box_definition.literal_box_coefficients
+    dummy = fresh.index("m")
+    return (
+        box_definition.laplacian_h_scale
+        * H(coordinate, dummy)
+        * BarPhi(dummy, pair)
+        + coefficients["right_connection"] * GammaRUp(coordinate, pair)
+    )
+
+
+def block_p(pair, box_definition):
+    box_definition = resolve_box_definition(box_definition)
+    coefficients = box_definition.literal_box_coefficients
+    first, second, upper = fresh.index("m"), fresh.index("n"), fresh.index("c")
+    scale = box_definition.laplacian_h_scale
+    return (
+        coefficients["left_ricci"] * RicL(pair)
+        + Fraction(1, 2) * scale
+        * H(first, second) * Phi(second, pair).derivative(first)
+        + Fraction(1, 2) * scale
         * H(first, second)
         * GammaABC(first, second, upper)
         * Phi(upper, pair)
     )
 
 
-def block_q(pair):
+def block_q(pair, box_definition):
+    box_definition = resolve_box_definition(box_definition)
+    coefficients = box_definition.literal_box_coefficients
     first, second, upper = fresh.index("m"), fresh.index("n"), fresh.index("c")
+    scale = box_definition.laplacian_h_scale
     return (
-        -RicR(pair)
-        + Fraction(1, 2)
-        * H(first, second)
-        * BarPhi(second, pair).derivative(first)
-        + Fraction(1, 2)
+        coefficients["right_ricci"] * RicR(pair)
+        + Fraction(1, 2) * scale
+        * H(first, second) * BarPhi(second, pair).derivative(first)
+        + Fraction(1, 2) * scale
         * H(first, second)
         * GammaABC(first, second, upper)
         * BarPhi(upper, pair)
     )
 
 
-def block_r(first_pair, second_pair):
-    first = fresh.index("m")
-    second = fresh.index("n")
-    upper = fresh.index("c")
-    lower = fresh.index("a")
+def block_r(first_pair, second_pair, box_definition):
+    box_definition = resolve_box_definition(box_definition)
+    coefficients = box_definition.literal_box_coefficients
+    first, second = fresh.index("m"), fresh.index("n")
+    upper, lower = fresh.index("c"), fresh.index("a")
     return (
-        Fraction(1, 4) * H(first, second) * Phi(first, first_pair) * Phi(second, second_pair)
-        - Fraction(1, 2) * GammaLUp(upper, first_pair) * Phi(upper, second_pair)
-        + Fraction(1, 4)
-        * GammaLDown(lower, first_pair)
-        * GammaLUp(lower, second_pair)
+        Fraction(1, 4) * box_definition.laplacian_h_scale
+        * H(first, second) * Phi(first, first_pair) * Phi(second, second_pair)
+        + Fraction(1, 2) * coefficients["left_connection"]
+        * GammaLUp(upper, first_pair) * Phi(upper, second_pair)
+        + coefficients["left_square"]
+        * GammaLDown(lower, first_pair) * GammaLUp(lower, second_pair)
     )
 
 
-def block_s(first_pair, second_pair):
-    first = fresh.index("m")
-    second = fresh.index("n")
-    upper = fresh.index("c")
-    lower = fresh.index("a")
+def block_s(first_pair, second_pair, box_definition):
+    box_definition = resolve_box_definition(box_definition)
+    coefficients = box_definition.literal_box_coefficients
+    first, second = fresh.index("m"), fresh.index("n")
+    upper, lower = fresh.index("c"), fresh.index("a")
     return (
-        Fraction(1, 4)
+        Fraction(1, 4) * box_definition.laplacian_h_scale
         * H(first, second)
-        * BarPhi(first, first_pair)
-        * BarPhi(second, second_pair)
-        + Fraction(1, 2)
-        * GammaRUp(upper, first_pair)
-        * BarPhi(upper, second_pair)
-        - Fraction(1, 4)
-        * GammaRDown(lower, first_pair)
-        * GammaRUp(lower, second_pair)
+        * BarPhi(first, first_pair) * BarPhi(second, second_pair)
+        + Fraction(1, 2) * coefficients["right_connection"]
+        * GammaRUp(upper, first_pair) * BarPhi(upper, second_pair)
+        + coefficients["right_square"]
+        * GammaRDown(lower, first_pair) * GammaRUp(lower, second_pair)
     )
 
 
-def block_t(left_pair, right_pair):
+def block_t(left_pair, right_pair, box_definition):
+    box_definition = resolve_box_definition(box_definition)
+    coefficients = box_definition.literal_box_coefficients
     first, second = fresh.index("m"), fresh.index("n")
     left_coordinate, right_coordinate = fresh.index("c"), fresh.index("c")
     return (
-        Fraction(1, 2)
-        * H(first, second)
-        * Phi(first, left_pair)
-        * BarPhi(second, right_pair)
-        - Fraction(1, 2)
-        * GammaLUp(left_coordinate, left_pair)
-        * BarPhi(left_coordinate, right_pair)
-        + Fraction(1, 2)
-        * GammaRUp(right_coordinate, right_pair)
-        * Phi(right_coordinate, left_pair)
-        + Fraction(1, 2) * MixRL(right_pair, left_pair)
-        - Fraction(1, 2) * MixLR(left_pair, right_pair)
+        Fraction(1, 2) * box_definition.laplacian_h_scale
+        * H(first, second) * Phi(first, left_pair) * BarPhi(second, right_pair)
+        + Fraction(1, 2) * coefficients["left_connection"]
+        * GammaLUp(left_coordinate, left_pair) * BarPhi(left_coordinate, right_pair)
+        + Fraction(1, 2) * coefficients["right_connection"]
+        * GammaRUp(right_coordinate, right_pair) * Phi(right_coordinate, left_pair)
+        + coefficients["mixed_RL"] * MixRL(right_pair, left_pair)
+        + coefficients["mixed_LR"] * MixLR(left_pair, right_pair)
     )
 
 
@@ -331,47 +548,47 @@ A_KINDS = ("A0", "AL", "AR")
 B_KINDS = ("BL", "BR", "BLL", "BRR", "BLR")
 
 
-def A_component(kind, coordinate, counters):
+def A_component(kind, coordinate, counters, box_definition):
     if kind == "A0":
-        return block_h(coordinate), (), "h"
+        return block_h(coordinate, box_definition), (), "h"
     if kind == "AL":
         counters[0] += 1
         pair = f"I{counters[0]}"
-        return block_u(coordinate, pair), (("L", pair),), "u"
+        return block_u(coordinate, pair, box_definition), (("L", pair),), "u"
     if kind == "AR":
         counters[1] += 1
         pair = f"J{counters[1]}"
-        return block_v(coordinate, pair), (("R", pair),), "v"
+        return block_v(coordinate, pair, box_definition), (("R", pair),), "v"
     raise ValueError(kind)
 
 
-def B_component(kind, counters):
+def B_component(kind, counters, box_definition):
     if kind == "BL":
         counters[0] += 1
         pair = f"I{counters[0]}"
-        return block_p(pair), (("L", pair),), "p"
+        return block_p(pair, box_definition), (("L", pair),), "p"
     if kind == "BR":
         counters[1] += 1
         pair = f"J{counters[1]}"
-        return block_q(pair), (("R", pair),), "q"
+        return block_q(pair, box_definition), (("R", pair),), "q"
     if kind == "BLL":
         counters[0] += 1
         first = f"I{counters[0]}"
         counters[0] += 1
         second = f"I{counters[0]}"
-        return block_r(first, second), (("L", first), ("L", second)), "r"
+        return block_r(first, second, box_definition), (("L", first), ("L", second)), "r"
     if kind == "BRR":
         counters[1] += 1
         first = f"J{counters[1]}"
         counters[1] += 1
         second = f"J{counters[1]}"
-        return block_s(first, second), (("R", first), ("R", second)), "s"
+        return block_s(first, second, box_definition), (("R", first), ("R", second)), "s"
     if kind == "BLR":
         counters[0] += 1
         left = f"I{counters[0]}"
         counters[1] += 1
         right = f"J{counters[1]}"
-        return block_t(left, right), (("L", left), ("R", right)), "t"
+        return block_t(left, right, box_definition), (("L", left), ("R", right)), "t"
     raise ValueError(kind)
 
 
@@ -386,7 +603,8 @@ class OperatorTerm:
     block_signature: str
 
 
-def generate_n1_operator_terms():
+def generate_n1_operator_terms(box_definition=None):
+    box_definition = resolve_box_definition(box_definition)
     fresh.reset()
     terms = []
 
@@ -403,19 +621,31 @@ def generate_n1_operator_terms():
             )
         )
 
-    add("H d2", 2, ("A", "B"), H("A", "B"), (), "H")
+    add(
+        "H d2",
+        2,
+        ("A", "B"),
+        principal_H("A", "B", box_definition),
+        (),
+        "H",
+    )
     for kind in A_KINDS:
-        coefficient, word, name = A_component(kind, "C", [0, 0])
+        coefficient, word, name = A_component(kind, "C", [0, 0], box_definition)
         add("A d1", 1, ("C",), coefficient, word, name)
     for kind in B_KINDS:
-        coefficient, word, name = B_component(kind, [0, 0])
+        coefficient, word, name = B_component(kind, [0, 0], box_definition)
         add("B d0", 0, (), coefficient, word, name)
     assert len(terms) == 9
     return terms
 
 
-def generate_n2_operator_terms():
-    """Equation (39.33), fully expanded into the 118 ordered block terms."""
+def generate_n2_operator_terms(box_definition=None):
+    """Normal-order Box o Box by the Leibniz rule into 118 structural terms.
+
+    The 118 is an output inventory, not a table of pre-seeded coefficients:
+    every H/A/B Polynomial below is regenerated from ``box_definition``.
+    """
+    box_definition = resolve_box_definition(box_definition)
     fresh.reset()
     terms = []
 
@@ -433,77 +663,123 @@ def generate_n2_operator_terms():
         )
 
     A, B, C, D, E = "A", "B", "C", "D", "E"
-    add("HH d4", 4, (A, B, C, D), H(A, B) * H(C, D), (), "HH")
-    add("H dH d3", 3, (B, C, D), 2 * H(A, B) * dH(C, D, A), (), "H dH")
+    add(
+        "HH d4", 4, (A, B, C, D),
+        principal_H(A, B, box_definition) * principal_H(C, D, box_definition),
+        (), "HH",
+    )
+    add(
+        "H dH d3", 3, (B, C, D),
+        2 * principal_H(A, B, box_definition)
+        * principal_dH(C, D, box_definition, A),
+        (), "H dH",
+    )
     for kind in A_KINDS:
-        coefficient, word, name = A_component(kind, C, [0, 0])
-        add("H A d3", 3, (A, B, C), 2 * H(A, B) * coefficient, word, f"H {name}")
-    add("H ddH d2", 2, (C, D), H(A, B) * dH(C, D, A, B), (), "H ddH")
+        coefficient, word, name = A_component(kind, C, [0, 0], box_definition)
+        add(
+            "H A d3", 3, (A, B, C),
+            2 * principal_H(A, B, box_definition) * coefficient,
+            word, f"H {name}",
+        )
+    add(
+        "H ddH d2", 2, (C, D),
+        principal_H(A, B, box_definition)
+        * principal_dH(C, D, box_definition, A, B),
+        (), "H ddH",
+    )
     for kind in A_KINDS:
-        coefficient, word, name = A_component(kind, E, [0, 0])
-        add("A dH d2", 2, (C, D), coefficient * dH(C, D, E), word, f"{name} dH")
+        coefficient, word, name = A_component(kind, E, [0, 0], box_definition)
+        add(
+            "A dH d2", 2, (C, D),
+            coefficient * principal_dH(C, D, box_definition, E),
+            word, f"{name} dH",
+        )
     for kind in A_KINDS:
-        coefficient, word, name = A_component(kind, C, [0, 0])
-        add("H dA d2", 2, (B, C), 2 * H(A, B) * coefficient.derivative(A), word, f"H d{name}")
+        coefficient, word, name = A_component(kind, C, [0, 0], box_definition)
+        add(
+            "H dA d2", 2, (B, C),
+            2 * principal_H(A, B, box_definition) * coefficient.derivative(A),
+            word, f"H d{name}",
+        )
     for left_kind in A_KINDS:
         for right_kind in A_KINDS:
             counters = [0, 0]
-            left, left_word, left_name = A_component(left_kind, E, counters)
-            right, right_word, right_name = A_component(right_kind, C, counters)
+            left, left_word, left_name = A_component(left_kind, E, counters, box_definition)
+            right, right_word, right_name = A_component(right_kind, C, counters, box_definition)
             add("A A d2", 2, (E, C), left * right, left_word + right_word, left_name + right_name)
     for kind in B_KINDS:
-        coefficient, word, name = B_component(kind, [0, 0])
-        add("H B d2", 2, (A, B), 2 * H(A, B) * coefficient, word, f"H {name}")
+        coefficient, word, name = B_component(kind, [0, 0], box_definition)
+        add(
+            "H B d2", 2, (A, B),
+            2 * principal_H(A, B, box_definition) * coefficient,
+            word, f"H {name}",
+        )
     for kind in A_KINDS:
-        coefficient, word, name = A_component(kind, C, [0, 0])
-        add("H ddA d1", 1, (C,), H(A, B) * coefficient.second_derivative(A, B), word, f"H dd{name}")
+        coefficient, word, name = A_component(kind, C, [0, 0], box_definition)
+        add(
+            "H ddA d1", 1, (C,),
+            principal_H(A, B, box_definition)
+            * coefficient.second_derivative(A, B),
+            word, f"H dd{name}",
+        )
     for left_kind in A_KINDS:
         for right_kind in A_KINDS:
             counters = [0, 0]
-            left, left_word, left_name = A_component(left_kind, E, counters)
-            right, right_word, right_name = A_component(right_kind, C, counters)
+            left, left_word, left_name = A_component(left_kind, E, counters, box_definition)
+            right, right_word, right_name = A_component(right_kind, C, counters, box_definition)
             add("A dA d1", 1, (C,), left * right.derivative(E), left_word + right_word, f"{left_name} d{right_name}")
     for kind in B_KINDS:
-        coefficient, word, name = B_component(kind, [0, 0])
-        add("H dB d1", 1, (C,), 2 * H(A, C) * coefficient.derivative(A), word, f"H d{name}")
+        coefficient, word, name = B_component(kind, [0, 0], box_definition)
+        add(
+            "H dB d1", 1, (C,),
+            2 * principal_H(A, C, box_definition) * coefficient.derivative(A),
+            word, f"H d{name}",
+        )
     for a_kind in A_KINDS:
         for b_kind in B_KINDS:
             counters = [0, 0]
-            a_coefficient, a_word, a_name = A_component(a_kind, C, counters)
-            b_coefficient, b_word, b_name = B_component(b_kind, counters)
+            a_coefficient, a_word, a_name = A_component(a_kind, C, counters, box_definition)
+            b_coefficient, b_word, b_name = B_component(b_kind, counters, box_definition)
             add("A B d1", 1, (C,), a_coefficient * b_coefficient, a_word + b_word, a_name + b_name)
     for b_kind in B_KINDS:
         for a_kind in A_KINDS:
             counters = [0, 0]
-            b_coefficient, b_word, b_name = B_component(b_kind, counters)
-            a_coefficient, a_word, a_name = A_component(a_kind, C, counters)
+            b_coefficient, b_word, b_name = B_component(b_kind, counters, box_definition)
+            a_coefficient, a_word, a_name = A_component(a_kind, C, counters, box_definition)
             add("B A d1", 1, (C,), b_coefficient * a_coefficient, b_word + a_word, b_name + a_name)
     for kind in B_KINDS:
-        coefficient, word, name = B_component(kind, [0, 0])
-        add("H ddB d0", 0, (), H(A, B) * coefficient.second_derivative(A, B), word, f"H dd{name}")
+        coefficient, word, name = B_component(kind, [0, 0], box_definition)
+        add(
+            "H ddB d0", 0, (),
+            principal_H(A, B, box_definition)
+            * coefficient.second_derivative(A, B),
+            word, f"H dd{name}",
+        )
     for a_kind in A_KINDS:
         for b_kind in B_KINDS:
             counters = [0, 0]
-            a_coefficient, a_word, a_name = A_component(a_kind, E, counters)
-            b_coefficient, b_word, b_name = B_component(b_kind, counters)
+            a_coefficient, a_word, a_name = A_component(a_kind, E, counters, box_definition)
+            b_coefficient, b_word, b_name = B_component(b_kind, counters, box_definition)
             add("A dB d0", 0, (), a_coefficient * b_coefficient.derivative(E), a_word + b_word, f"{a_name} d{b_name}")
     for left_kind in B_KINDS:
         for right_kind in B_KINDS:
             counters = [0, 0]
-            left, left_word, left_name = B_component(left_kind, counters)
-            right, right_word, right_name = B_component(right_kind, counters)
+            left, left_word, left_name = B_component(left_kind, counters, box_definition)
+            right, right_word, right_name = B_component(right_kind, counters, box_definition)
             add("B B d0", 0, (), left * right, left_word + right_word, left_name + right_name)
 
     assert len(terms) == 118
-    assert sum(len(term.coefficient.terms) for term in terms) == 867
+    if box_definition == MAIN_PDF_BOX:
+        assert sum(len(term.coefficient.terms) for term in terms) == 867
     return terms
 
 
-def operator_terms(n):
+def operator_terms(n, box_definition=None):
+    box_definition = resolve_box_definition(box_definition)
     if n == 1:
-        return generate_n1_operator_terms()
+        return generate_n1_operator_terms(box_definition)
     if n == 2:
-        return generate_n2_operator_terms()
+        return generate_n2_operator_terms(box_definition)
     raise ValueError("This exact calculator currently supports n=1 and n=2")
 
 
@@ -1102,6 +1378,7 @@ class TraceRow:
 class TraceResult:
     field: FieldSpec
     n: int
+    box_definition: MainBoxDefinition
     terms: tuple[TraceRow, ...]
     provenance_count: int
     exact_block_count: int
@@ -1120,9 +1397,10 @@ class TraceResult:
 
 
 @lru_cache(maxsize=None)
-def _build_trace_result(field_name, n):
+def _build_trace_result(field_name, n, box_definition):
     field = resolve_field(field_name)
-    terms = operator_terms(n)
+    box_definition = resolve_box_definition(box_definition)
+    terms = operator_terms(n, box_definition)
     combined_rows = defaultdict(Fraction)
     representative_bodies = {}
     provenance_count = 0
@@ -1193,6 +1471,7 @@ def _build_trace_result(field_name, n):
     return TraceResult(
         field=field,
         n=n,
+        box_definition=box_definition,
         terms=rows,
         provenance_count=provenance_count,
         exact_block_count=len(terms),
@@ -1200,12 +1479,13 @@ def _build_trace_result(field_name, n):
     )
 
 
-def build_trace_result(field, n):
-    """Return the exact final ledger without printing it."""
+def build_trace_result(field, n, box_definition=None):
+    """Return the exact final ledger generated from one Box input object."""
     resolved = resolve_field(field)
+    box_definition = resolve_box_definition(box_definition)
     if n not in {1, 2}:
         raise ValueError("Only n=1 and n=2 are implemented exactly")
-    return _build_trace_result(resolved.name, int(n))
+    return _build_trace_result(resolved.name, int(n), box_definition)
 
 
 FIELD_LATEX = {
@@ -1223,33 +1503,82 @@ FIELD_LATEX = {
 }
 
 
-def box_definition_latex_chunks():
-    """Return main.pdf (2.1),(2.2),(2.6), suppressing spectator indices."""
+def _operator_sum_latex(lhs, entries):
+    entries = tuple((Fraction(coefficient), body) for coefficient, body in entries if coefficient)
+    if not entries:
+        return lhs + "&=0"
+    lines = []
+    for index, (coefficient, body) in enumerate(entries):
+        if index == 0:
+            lines.append(lhs + "&=" + signed_latex_term(coefficient, body, first=True))
+        else:
+            lines.append(r"&\quad" + signed_latex_term(coefficient, body))
+    return r"\\".join(lines)
+
+
+def box_definition_latex_chunks(box_definition=None):
+    """Render the *executable* input for main.pdf (2.1),(2.2),(2.6)."""
+    box_definition = resolve_box_definition(box_definition)
+    delta = box_definition.delta
+    bar_delta = box_definition.bar_delta
+    box_equation = _operator_sum_latex(
+        r"\Box T:",
+        (
+            (box_definition.delta_in_box, r"\Delta T"),
+            (box_definition.bar_delta_in_box, r"\bar\Delta T"),
+        ),
+    )
+    delta_equation = _operator_sum_latex(
+        r"\Delta T",
+        (
+            (delta.laplacian, r"\mathcal D_q\mathcal D^qT"),
+            (delta.ricci_generator, r"\mathfrak R_{[q_1q_2]}G^{q_1q_2}T"),
+            (
+                delta.connection_derivative_generator,
+                r"\Gamma^B{}_{q_1q_2}\mathcal D_BG^{q_1q_2}T",
+            ),
+            (
+                delta.generator_square,
+                r"\Gamma_{Bq_1q_2}\Gamma^B{}_{q_3q_4}"
+                r"G^{q_1q_2}G^{q_3q_4}T",
+            ),
+            (
+                delta.mixed_curvature_generators,
+                r"\mathfrak R_{\bar q_1\bar q_2q_3q_4}"
+                r"\bar G^{\bar q_1\bar q_2}G^{q_3q_4}T",
+            ),
+        ),
+    )
+    bar_equation = _operator_sum_latex(
+        r"\bar\Delta T",
+        (
+            (bar_delta.laplacian, r"\mathcal D_{\bar q}\mathcal D^{\bar q}T"),
+            (
+                bar_delta.ricci_generator,
+                r"\mathfrak R_{[\bar q_1\bar q_2]}"
+                r"\bar G^{\bar q_1\bar q_2}T",
+            ),
+            (
+                bar_delta.connection_derivative_generator,
+                r"\Gamma^B{}_{\bar q_1\bar q_2}\mathcal D_B"
+                r"\bar G^{\bar q_1\bar q_2}T",
+            ),
+            (
+                bar_delta.generator_square,
+                r"\Gamma_{B\bar q_1\bar q_2}\Gamma^B{}_{\bar q_3\bar q_4}"
+                r"\bar G^{\bar q_1\bar q_2}\bar G^{\bar q_3\bar q_4}T",
+            ),
+            (
+                bar_delta.mixed_curvature_generators,
+                r"\mathfrak R_{q_1q_2\bar q_3\bar q_4}"
+                r"G^{q_1q_2}\bar G^{\bar q_3\bar q_4}T",
+            ),
+        ),
+    )
     return (
-        r"\begin{aligned}"
-        r"\Box T&:=\left(\Delta-\bar\Delta\right)T."
-        r"\end{aligned}\tag{2.6}",
-        r"\begin{aligned}"
-        r"\Delta T={}&\mathcal D_q\mathcal D^qT\\"
-        r"&+\left(\mathfrak R_{[q_1q_2]}"
-        r"-\Gamma^B{}_{q_1q_2}\mathcal D_B\right)"
-        r"G^{q_1q_2}T\\"
-        r"&+\frac14\Gamma_{Bq_1q_2}\Gamma^B{}_{q_3q_4}"
-        r"G^{q_1q_2}G^{q_3q_4}T\\"
-        r"&+\frac12\mathfrak R_{\bar q_1\bar q_2q_3q_4}"
-        r"\bar G^{\bar q_1\bar q_2}G^{q_3q_4}T."
-        r"\end{aligned}\tag{2.1}",
-        r"\begin{aligned}"
-        r"\bar\Delta T={}&\mathcal D_{\bar q}\mathcal D^{\bar q}T\\"
-        r"&+\left(\mathfrak R_{[\bar q_1\bar q_2]}"
-        r"-\Gamma^B{}_{\bar q_1\bar q_2}\mathcal D_B\right)"
-        r"\bar G^{\bar q_1\bar q_2}T\\"
-        r"&+\frac14\Gamma_{B\bar q_1\bar q_2}"
-        r"\Gamma^B{}_{\bar q_3\bar q_4}"
-        r"\bar G^{\bar q_1\bar q_2}\bar G^{\bar q_3\bar q_4}T\\"
-        r"&+\frac12\mathfrak R_{q_1q_2\bar q_3\bar q_4}"
-        r"G^{q_1q_2}\bar G^{\bar q_3\bar q_4}T."
-        r"\end{aligned}\tag{2.2}",
+        r"\begin{aligned}" + box_equation + r".\end{aligned}\tag{2.6}",
+        r"\begin{aligned}" + delta_equation + r".\end{aligned}\tag{2.1}",
+        r"\begin{aligned}" + bar_equation + r".\end{aligned}\tag{2.2}",
     )
 
 
@@ -1261,9 +1590,9 @@ def _show_latex_or_text(chunks):
             print(chunk)
 
 
-def show_box_definition():
-    """Display only the defining equations and notation of main.pdf."""
-    chunks = box_definition_latex_chunks()
+def show_box_definition(box_definition=None):
+    """Display the exact Box input object used by all downstream traces."""
+    chunks = box_definition_latex_chunks(box_definition)
     _show_latex_or_text(chunks)
     return chunks
 
@@ -1348,54 +1677,89 @@ def _generator_action_latex(field, sector):
     raise ValueError(f"Unknown generator sector: {sector}")
 
 
-def field_box_latex(field):
+def field_box_latex(field, box_definition=None):
     """Specialize main.pdf (2.1), (2.2), and (2.6) to one raw field."""
     field = resolve_field(field)
+    box_definition = resolve_box_definition(box_definition)
     label = FIELD_LATEX[field.name]
-    # Preserve main.pdf's order exactly: all four Delta terms, followed by
-    # minus all four barred-Delta terms.
-    terms = [rf"\mathcal D_q\mathcal D^q{label}"]
+    # Substitute the editable (2.1),(2.2) coefficients into (2.6).  This is
+    # also the object passed to build_trace_result below; the display is not a
+    # disconnected copy of the formula.
+    delta = box_definition.delta
+    bar_delta = box_definition.bar_delta
+    left_weight = box_definition.delta_in_box
+    right_weight = box_definition.bar_delta_in_box
+    entries = [
+        (left_weight * delta.laplacian, rf"\mathcal D_q\mathcal D^q{label}"),
+    ]
     if field.a:
-        terms.extend(
+        entries.extend(
             (
-                rf"{{}}+\left(\mathfrak R_{{[q_1q_2]}}"
-                rf"-\Gamma^B{{}}_{{q_1q_2}}\mathcal D_B\right)"
-                rf"G^{{q_1q_2}}{label}",
-                rf"{{}}+\frac14\Gamma_{{Bq_1q_2}}\Gamma^B{{}}_{{q_3q_4}}"
-                rf"G^{{q_1q_2}}G^{{q_3q_4}}{label}",
+                (
+                    left_weight * delta.ricci_generator,
+                    rf"\mathfrak R_{{[q_1q_2]}}G^{{q_1q_2}}{label}",
+                ),
+                (
+                    left_weight * delta.connection_derivative_generator,
+                    rf"\Gamma^B{{}}_{{q_1q_2}}\mathcal D_B"
+                    rf"G^{{q_1q_2}}{label}",
+                ),
+                (
+                    left_weight * delta.generator_square,
+                    rf"\Gamma_{{Bq_1q_2}}\Gamma^B{{}}_{{q_3q_4}}"
+                    rf"G^{{q_1q_2}}G^{{q_3q_4}}{label}",
+                ),
             )
         )
     if field.a and field.b:
-        terms.append(
-            rf"{{}}+\frac12\mathfrak R_{{\bar q_1\bar q_2q_3q_4}}"
-            rf"\bar G^{{\bar q_1\bar q_2}}G^{{q_3q_4}}{label}"
+        entries.append(
+            (
+                left_weight * delta.mixed_curvature_generators,
+                rf"\mathfrak R_{{\bar q_1\bar q_2q_3q_4}}"
+                rf"\bar G^{{\bar q_1\bar q_2}}G^{{q_3q_4}}{label}",
+            )
         )
-    terms.append(
-        rf"{{}}-\mathcal D_{{\bar q}}\mathcal D^{{\bar q}}{label}"
+    entries.append(
+        (
+            right_weight * bar_delta.laplacian,
+            rf"\mathcal D_{{\bar q}}\mathcal D^{{\bar q}}{label}",
+        )
     )
     if field.b:
-        terms.extend(
+        entries.extend(
             (
-                rf"{{}}-\left(\mathfrak R_{{[\bar q_1\bar q_2]}}"
-                rf"-\Gamma^B{{}}_{{\bar q_1\bar q_2}}\mathcal D_B\right)"
-                rf"\bar G^{{\bar q_1\bar q_2}}{label}",
-                rf"{{}}-\frac14\Gamma_{{B\bar q_1\bar q_2}}"
-                rf"\Gamma^B{{}}_{{\bar q_3\bar q_4}}"
-                rf"\bar G^{{\bar q_1\bar q_2}}"
-                rf"\bar G^{{\bar q_3\bar q_4}}{label}",
+                (
+                    right_weight * bar_delta.ricci_generator,
+                    rf"\mathfrak R_{{[\bar q_1\bar q_2]}}"
+                    rf"\bar G^{{\bar q_1\bar q_2}}{label}",
+                ),
+                (
+                    right_weight * bar_delta.connection_derivative_generator,
+                    rf"\Gamma^B{{}}_{{\bar q_1\bar q_2}}\mathcal D_B"
+                    rf"\bar G^{{\bar q_1\bar q_2}}{label}",
+                ),
+                (
+                    right_weight * bar_delta.generator_square,
+                    rf"\Gamma_{{B\bar q_1\bar q_2}}"
+                    rf"\Gamma^B{{}}_{{\bar q_3\bar q_4}}"
+                    rf"\bar G^{{\bar q_1\bar q_2}}"
+                    rf"\bar G^{{\bar q_3\bar q_4}}{label}",
+                ),
             )
         )
     if field.a and field.b:
-        terms.append(
-            rf"{{}}-\frac12\mathfrak R_{{q_1q_2\bar q_3\bar q_4}}"
-            rf"G^{{q_1q_2}}\bar G^{{\bar q_3\bar q_4}}{label}"
+        entries.append(
+            (
+                right_weight * bar_delta.mixed_curvature_generators,
+                rf"\mathfrak R_{{q_1q_2\bar q_3\bar q_4}}"
+                rf"G^{{q_1q_2}}\bar G^{{\bar q_3\bar q_4}}{label}",
+            )
         )
     representation = (
         rf"{label}\in S^{{\otimes {field.a}}}"
         rf"\otimes(\bar S^*)^{{\otimes {field.b}}}"
     )
-    box_lines = [rf"\Box {label}={{}}&{terms[0]}"]
-    box_lines.extend(rf"&\quad{term}" for term in terms[1:])
+    box_lines = _operator_sum_latex(rf"\Box {label}", entries)
     return (
         r"\begin{aligned}"
         + representation
@@ -1404,16 +1768,24 @@ def field_box_latex(field):
         + r",\qquad "
         + _generator_action_latex(field, "R")
         + r",\\"
-        + r"\\".join(box_lines)
+        + box_lines
         + r"."
         + r"\end{aligned}"
     )
 
 
-def show_field_boxes(combination):
+def show_field_boxes(combination, box_definition=None, field_box_definitions=None):
     """Display the field-specialized Box for every input representation."""
     normalized = normalize_combination(combination)
-    chunks = tuple(field_box_latex(field) for field, _weight in normalized)
+    definitions = resolve_field_box_definitions(
+        normalized,
+        box_definition=box_definition,
+        field_box_definitions=field_box_definitions,
+    )
+    chunks = tuple(
+        field_box_latex(field, definition)
+        for (field, _weight), definition in zip(normalized, definitions)
+    )
     _show_latex_or_text(chunks)
     return chunks
 
@@ -1478,13 +1850,13 @@ def _trace_latex_chunks(result, terms_per_chunk=20):
     return chunks
 
 
-def trace_terms(field, n, show=True, terms_per_chunk=20):
+def trace_terms(field, n, show=True, terms_per_chunk=20, box_definition=None):
     """Generate and print *every* final term for one field and n=1 or n=2.
 
     The returned coefficients are unweighted finite-dimensional raw-field
     representation traces.  ``show=True`` never abbreviates or elides terms.
     """
-    result = build_trace_result(field, int(n))
+    result = build_trace_result(field, int(n), box_definition=box_definition)
     if show:
         header = (
             f"{result.field.name}, n={result.n}: {result.term_count} final terms "
@@ -1612,6 +1984,29 @@ def normalize_combination(combination):
     if not normalized:
         raise ValueError("The field combination is empty")
     return normalized
+
+
+def resolve_field_box_definitions(normalized, box_definition=None, field_box_definitions=None):
+    """Resolve the executable Box used for each selected field.
+
+    Normally every field receives the same ``box_definition``.  The optional
+    mapping exists for an explicit negative control: it lets a notebook apply
+    an intentionally inconsistent Box to (for example) T only, proving that
+    the displayed input object is connected to the actual F-variable
+    calculation rather than merely printed above it.
+    """
+    common = resolve_box_definition(box_definition)
+    overrides = {}
+    if field_box_definitions:
+        for field_value, definition in field_box_definitions.items():
+            overrides[resolve_field(field_value).name] = resolve_box_definition(definition)
+    selected_names = {field.name for field, _weight in normalized}
+    unknown = set(overrides) - selected_names
+    if unknown:
+        raise KeyError(
+            "Box override supplied for unselected field(s): " + ", ".join(sorted(unknown))
+        )
+    return tuple(overrides.get(field.name, common) for field, _weight in normalized)
 
 
 _CADABRA_FACTOR_HEAD = {
@@ -1790,6 +2185,8 @@ def prepare_field_variables(
     show=True,
     show_field_boxes_first=False,
     terms_per_chunk=15,
+    box_definition=None,
+    field_box_definitions=None,
 ):
     """Create weighted, fully expanded Cadabra variables F1, F2, ... .
 
@@ -1803,7 +2200,15 @@ def prepare_field_variables(
     """
     n = int(n)
     normalized = normalize_combination(combination)
-    field_results = tuple(build_trace_result(field, n) for field, _weight in normalized)
+    selected_box_definitions = resolve_field_box_definitions(
+        normalized,
+        box_definition=box_definition,
+        field_box_definitions=field_box_definitions,
+    )
+    field_results = tuple(
+        build_trace_result(field, n, box_definition=definition)
+        for (field, _weight), definition in zip(normalized, selected_box_definitions)
+    )
     union_keys = sorted(
         {row.body_key for result in field_results for row in result.terms},
         key=lambda key: (-key[0], repr(key)),
@@ -1876,7 +2281,11 @@ def prepare_field_variables(
     )
     if show:
         if show_field_boxes_first:
-            show_field_boxes(normalized)
+            show_field_boxes(
+                normalized,
+                box_definition=box_definition,
+                field_box_definitions=field_box_definitions,
+            )
         print(
             f"Prepared {len(prepared.variables)} weighted Cadabra variables "
             f"with {prepared.term_count} fully expanded terms."
@@ -1942,6 +2351,8 @@ def sum_trace_combination(
     show_field_traces=True,
     show_cancellation_ledger=True,
     terms_per_chunk=20,
+    box_definition=None,
+    field_box_definitions=None,
 ):
     """Fully expand, weight and Cadabra-collect a field combination.
 
@@ -1955,6 +2366,8 @@ def sum_trace_combination(
         n,
         show=show and show_field_traces,
         terms_per_chunk=terms_per_chunk,
+        box_definition=box_definition,
+        field_box_definitions=field_box_definitions,
     )
     normalized = prepared.combination
     field_results = prepared.field_results
@@ -2005,6 +2418,10 @@ def sum_trace_combination(
 
 
 __all__ = [
+    "DeltaDefinition",
+    "MainBoxDefinition",
+    "MAIN_PDF_BOX",
+    "resolve_box_definition",
     "FIELD_SPECS",
     "EIGHT_FIELD_COMBINATION",
     "FOUR_FIELD_COMBINATION",
@@ -2016,6 +2433,7 @@ __all__ = [
     "FieldVariableSet",
     "CombinationResult",
     "show_box_definition",
+    "box_definition_latex_chunks",
     "field_box_latex",
     "show_field_boxes",
     "trace_terms",

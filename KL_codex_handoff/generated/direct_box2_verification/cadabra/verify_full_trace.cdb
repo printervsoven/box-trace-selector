@@ -169,7 +169,7 @@ box_chunks = box_definition_latex_chunks()
 assert len(box_chunks) == 3
 main_box_source = "".join(box_chunks)
 assert r"\Box T" in box_chunks[0]
-assert r"\left(\Delta-\bar\Delta\right)T" in box_chunks[0]
+assert r"\Delta T" in box_chunks[0] and r"\bar\Delta T" in box_chunks[0]
 assert r"\tag{2.6}" in box_chunks[0]
 assert r"\Delta T" in box_chunks[1] and r"\tag{2.1}" in box_chunks[1]
 assert r"\bar\Delta T" in box_chunks[2] and r"\tag{2.2}" in box_chunks[2]
@@ -200,6 +200,41 @@ for field_box in field_boxes:
     ):
         assert forbidden not in field_box
 print("PASS main.pdf Box equations and all eight shorthand-free specializations")
+
+
+# The displayed input is the calculation input, not a decorative formula.
+assert MAIN_PDF_BOX.literal_box_coefficients == {
+    "kinetic_difference": Fraction(1),
+    "left_ricci": Fraction(1),
+    "left_connection": Fraction(-1),
+    "left_square": Fraction(1, 4),
+    "mixed_RL": Fraction(1, 2),
+    "right_ricci": Fraction(-1),
+    "right_connection": Fraction(1),
+    "right_square": Fraction(-1, 4),
+    "mixed_LR": Fraction(-1, 2),
+}
+modified_box = MAIN_PDF_BOX.with_term(
+    "delta", "mixed_curvature_generators", Fraction(1)
+)
+assert modified_box != MAIN_PDF_BOX
+assert modified_box.literal_box_coefficients["mixed_RL"] == 1
+assert box_definition_latex_chunks(modified_box) != box_chunks
+assert field_box_latex("T", modified_box) != field_box_latex("T", MAIN_PDF_BOX)
+assert build_trace_result("T", 2, modified_box).terms != build_trace_result(
+    "T", 2, MAIN_PDF_BOX
+).terms
+modified_kinetic = MAIN_PDF_BOX.with_term("delta", "laplacian", Fraction(0))
+assert modified_kinetic.laplacian_h_scale == Fraction(1, 2)
+assert build_trace_result("phi", 1, modified_kinetic).terms != build_trace_result(
+    "phi", 1, MAIN_PDF_BOX
+).terms
+section_zero_box = MAIN_PDF_BOX.with_box_weights(delta=1, bar_delta=1)
+assert all(value == 0 for value in section_zero_box.literal_box_coefficients.values())
+assert build_trace_result("T", 1, section_zero_box).terms == ()
+assert build_trace_result("T", 2, section_zero_box).terms == ()
+print("PASS editable main.pdf input changes the rendered Box and generated T trace")
+print("PASS Appendix D.12: the editable Delta + barDelta input reduces to zero")
 
 
 prepared8 = prepare_field_variables(EIGHT_FIELD_COMBINATION, 2, show=False)
@@ -256,6 +291,35 @@ assert Counter(len(row.contributions) for row in combo8_n2.ledger) == {
     8: 14,
 }
 print("PASS 8-field n=2: 1994 expanded terms -> 404/404 exact zeros")
+
+
+# A common Box deformation still cancels: the eight-field relation annihilates
+# every common representation-trace structure at n=2.  Applying a different
+# definition to T only deliberately breaks that universality and is the
+# negative control proving that the input object drives the calculation.
+common_modified = sum_trace_combination(
+    EIGHT_FIELD_COMBINATION,
+    2,
+    show=False,
+    box_definition=modified_box,
+)
+assert common_modified.is_zero
+assert common_modified.zero_keys == common_modified.canonical_keys
+inconsistent_box = sum_trace_combination(
+    EIGHT_FIELD_COMBINATION,
+    2,
+    show=False,
+    box_definition=MAIN_PDF_BOX,
+    field_box_definitions={"T": modified_box},
+)
+assert not inconsistent_box.is_zero
+assert inconsistent_box.canonical_keys == 404
+assert inconsistent_box.zero_keys == 395
+assert expression_term_count(inconsistent_box.cadabra_residual) == 5
+print(
+    "PASS executable-Box controls: common deformation cancels; "
+    "T-only deformation leaves 9 ledger / 5 Cadabra residual structures"
+)
 
 
 combo4_n2 = sum_trace_combination(FOUR_FIELD_COMBINATION, 2, show=False)
