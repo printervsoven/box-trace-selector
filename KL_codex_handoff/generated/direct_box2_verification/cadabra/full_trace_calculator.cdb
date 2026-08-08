@@ -37,6 +37,194 @@ from cadabra2 import (
 )
 
 
+@dataclass(frozen=True)
+class TensorHeadDefinition:
+    """One tensor head shared by geometry definitions and trace factors."""
+
+    key: str
+    cadabra_name: str
+    latex_name: str
+
+
+DFT_GAMMA_HEAD = TensorHeadDefinition(
+    "dft_christoffel", "Gamma", r"\Gamma"
+)
+DFT_CURVATURE_HEAD = TensorHeadDefinition(
+    "dft_curvature", "Rfrak", r"\mathfrak R"
+)
+DFT_PROJECTOR_HEAD = TensorHeadDefinition("projector", "P", r"P")
+DFT_BAR_PROJECTOR_HEAD = TensorHeadDefinition(
+    "bar_projector", "Pbar", r"\bar P"
+)
+DFT_DILATON_HEAD = TensorHeadDefinition("dft_dilaton", "d", r"d")
+
+
+@dataclass(frozen=True)
+class GeometryDefinitionTerm:
+    """A typed summand in main.pdf (3.7) or (3.10)."""
+
+    coefficient: Fraction
+    operation: str
+
+    def __post_init__(self):
+        object.__setattr__(self, "coefficient", Fraction(self.coefficient))
+        allowed = {
+            "projected_derivative",
+            "projector_difference_derivative",
+            "trace_correction",
+            "curvature_derivative_A",
+            "curvature_derivative_B",
+            "curvature_product_AB",
+            "curvature_product_BA",
+        }
+        if self.operation not in allowed:
+            raise ValueError(f"Unsupported geometry operation: {self.operation}")
+
+
+@dataclass(frozen=True)
+class DFTGeometryDefinition:
+    """Executable, renderer-backed definition of one geometry tensor head."""
+
+    name: str
+    equation_number: str
+    output_head: TensorHeadDefinition
+    dependencies: tuple[TensorHeadDefinition, ...]
+    terms: tuple[GeometryDefinitionTerm, ...]
+
+    def __post_init__(self):
+        object.__setattr__(self, "dependencies", tuple(self.dependencies))
+        object.__setattr__(self, "terms", tuple(self.terms))
+        if any(not isinstance(term, GeometryDefinitionTerm) for term in self.terms):
+            raise TypeError("Geometry terms must be GeometryDefinitionTerm objects")
+        operations = {term.operation for term in self.terms}
+        if self.output_head is DFT_GAMMA_HEAD:
+            expected = {
+                "projected_derivative",
+                "projector_difference_derivative",
+                "trace_correction",
+            }
+        elif self.output_head is DFT_CURVATURE_HEAD:
+            expected = {
+                "curvature_derivative_A",
+                "curvature_derivative_B",
+                "curvature_product_AB",
+                "curvature_product_BA",
+            }
+            if DFT_GAMMA_HEAD not in self.dependencies:
+                raise ValueError("The curvature definition must depend on DFT_GAMMA_HEAD")
+        else:
+            raise ValueError("Unsupported geometry output tensor head")
+        if operations != expected:
+            raise ValueError(
+                f"{self.name} has operations {sorted(operations)}, "
+                f"expected {sorted(expected)}"
+            )
+
+    def _term_body_latex(self, operation):
+        P = DFT_PROJECTOR_HEAD.latex_name
+        Pbar = DFT_BAR_PROJECTOR_HEAD.latex_name
+        Gamma = DFT_GAMMA_HEAD.latex_name
+        d = DFT_DILATON_HEAD.latex_name
+        if operation == "projected_derivative":
+            return rf"\left({P}\partial_C{P}{Pbar}\right)_{{[AB]}}"
+        if operation == "projector_difference_derivative":
+            return (
+                rf"\left({Pbar}_{{[A}}{{}}^D{Pbar}_{{B]}}{{}}^E"
+                rf"-{P}_{{[A}}{{}}^D{P}_{{B]}}{{}}^E\right)"
+                rf"\partial_D{P}_{{EC}}"
+            )
+        if operation == "trace_correction":
+            projectors = (
+                rf"\frac{{1}}{{{P}_M{{}}^M-1}}{P}_{{C[A}}{P}_{{B]}}{{}}^D"
+                rf"+\frac{{1}}{{{Pbar}_M{{}}^M-1}}"
+                rf"{Pbar}_{{C[A}}{Pbar}_{{B]}}{{}}^D"
+            )
+            bracket = (
+                rf"\partial_D {d}"
+                rf"+\left({P}\partial^E{P}{Pbar}\right)_{{[ED]}}"
+            )
+            return rf"\left({projectors}\right)\left({bracket}\right)"
+        if operation == "curvature_derivative_A":
+            return rf"\partial_A{Gamma}_B{{}}^C{{}}_D"
+        if operation == "curvature_derivative_B":
+            return rf"\partial_B{Gamma}_A{{}}^C{{}}_D"
+        if operation == "curvature_product_AB":
+            return rf"{Gamma}_A{{}}^C{{}}_E{Gamma}_B{{}}^E{{}}_D"
+        if operation == "curvature_product_BA":
+            return rf"{Gamma}_B{{}}^C{{}}_E{Gamma}_A{{}}^E{{}}_D"
+        raise ValueError(f"Unsupported geometry operation: {operation}")
+
+    def latex(self):
+        lhs = (
+            rf"{self.output_head.latex_name}_{{CAB}}"
+            if self.output_head is DFT_GAMMA_HEAD
+            else rf"{self.output_head.latex_name}^C{{}}_{{DAB}}"
+        )
+        pieces = []
+        for index, term in enumerate(self.terms):
+            coefficient = term.coefficient
+            magnitude = abs(coefficient)
+            if magnitude.denominator == 1:
+                scalar = "" if magnitude == 1 else str(magnitude.numerator)
+            else:
+                scalar = rf"\frac{{{magnitude.numerator}}}{{{magnitude.denominator}}}"
+            body = self._term_body_latex(term.operation)
+            if index == 0:
+                sign = "-" if coefficient < 0 else ""
+            else:
+                sign = "{}-" if coefficient < 0 else "{}+"
+            pieces.append(sign + scalar + body)
+        lines = [lhs + "&=" + pieces[0]]
+        lines.extend(r"&\quad" + piece for piece in pieces[1:])
+        return r"\begin{aligned}" + r"\\".join(lines) + r"\end{aligned}"
+
+
+DFT_GAMMA_DEFINITION = DFTGeometryDefinition(
+    name="DFT Christoffel connection",
+    equation_number="3.7",
+    output_head=DFT_GAMMA_HEAD,
+    dependencies=(DFT_PROJECTOR_HEAD, DFT_BAR_PROJECTOR_HEAD, DFT_DILATON_HEAD),
+    terms=(
+        GeometryDefinitionTerm(2, "projected_derivative"),
+        GeometryDefinitionTerm(2, "projector_difference_derivative"),
+        GeometryDefinitionTerm(-4, "trace_correction"),
+    ),
+)
+DFT_CURVATURE_DEFINITION = DFTGeometryDefinition(
+    name="DFT curvature",
+    equation_number="3.10",
+    output_head=DFT_CURVATURE_HEAD,
+    dependencies=(DFT_GAMMA_HEAD,),
+    terms=(
+        GeometryDefinitionTerm(1, "curvature_derivative_A"),
+        GeometryDefinitionTerm(-1, "curvature_derivative_B"),
+        GeometryDefinitionTerm(1, "curvature_product_AB"),
+        GeometryDefinitionTerm(-1, "curvature_product_BA"),
+    ),
+)
+DFT_BACKGROUND_OBJECT_REGISTRY = (
+    DFT_GAMMA_DEFINITION,
+    DFT_CURVATURE_DEFINITION,
+)
+
+
+def get_dft_object(name):
+    """Resolve one immutable main.pdf background object by public/head name."""
+    aliases = {
+        "gamma": DFT_GAMMA_DEFINITION,
+        "christoffel": DFT_GAMMA_DEFINITION,
+        "dft_christoffel": DFT_GAMMA_DEFINITION,
+        "r": DFT_CURVATURE_DEFINITION,
+        "rfrak": DFT_CURVATURE_DEFINITION,
+        "curvature": DFT_CURVATURE_DEFINITION,
+        "dft_curvature": DFT_CURVATURE_DEFINITION,
+    }
+    key = str(name).strip().lower()
+    if key not in aliases:
+        raise KeyError(f"Unknown DFT background object: {name}")
+    return aliases[key]
+
+
 D_SPIN = 16
 
 
@@ -84,26 +272,35 @@ class TensorBodyFactor:
                 f"received {self.slots!r}"
             )
 
+    @property
+    def tensor_head(self):
+        if self.kind in {"ConnectionUp", "ConnectionDown", "GammaUp", "GammaDown"}:
+            return DFT_GAMMA_HEAD
+        if self.kind in {"Ricci", "Riemann", "MixedCurvature"}:
+            return DFT_CURVATURE_HEAD
+        raise ValueError(f"Unsupported structural tensor factor: {self.kind}")
+
     def latex(self, sector):
         if sector not in {"delta", "bar_delta"}:
             raise KeyError("sector must be 'delta' or 'bar_delta'")
         barred = sector == "bar_delta"
         pair1 = r"\bar q_1\bar q_2" if barred else r"q_1q_2"
         pair2 = r"\bar q_3\bar q_4" if barred else r"q_3q_4"
+        head = self.tensor_head.latex_name
         if self.kind == "Ricci":
-            return rf"\mathfrak R_{{[{pair1}]}}"
+            return rf"{head}_{{[{pair1}]}}"
         if self.kind in {"ConnectionUp", "GammaUp"}:
             pair = pair2 if self.slots[1] == "pair2" else pair1
-            return rf"\Gamma^B{{}}_{{{pair}}}"
+            return rf"{head}^B{{}}_{{{pair}}}"
         if self.kind in {"ConnectionDown", "GammaDown"}:
             pair = pair2 if self.slots[1] == "pair2" else pair1
-            return rf"\Gamma_{{B{pair}}}"
+            return rf"{head}_{{B{pair}}}"
         if self.kind == "Riemann":
-            return rf"\mathfrak R_{{{pair1}{pair2}}}"
+            return rf"{head}_{{{pair1}{pair2}}}"
         if self.kind == "MixedCurvature":
             if barred:
-                return r"\mathfrak R_{q_1q_2\bar q_3\bar q_4}"
-            return r"\mathfrak R_{\bar q_1\bar q_2q_3q_4}"
+                return head + r"_{q_1q_2\bar q_3\bar q_4}"
+            return head + r"_{\bar q_1\bar q_2q_3q_4}"
         raise ValueError(f"Unsupported structural tensor factor: {self.kind}")
 
 
@@ -502,8 +699,10 @@ def _ensure_cadabra_tensor_properties():
     Indices(Ex("{l0,l1,l2,l3}"), Ex("left_lorentz, position=fixed"))
     Indices(Ex("{r0,r1,r2,r3}"), Ex("right_lorentz, position=fixed"))
     PartialDerivative(Ex("PD{#}"), Ex(""))
+    gamma_name = DFT_GAMMA_DEFINITION.output_head.cadabra_name
+    curvature_name = DFT_CURVATURE_DEFINITION.output_head.cadabra_name
     Depends(
-        Ex("{H,Gamma,Phi,BarPhi,Rfrak,Probe}"),
+        Ex("{H," + gamma_name + ",Phi,BarPhi," + curvature_name + ",Probe}"),
         Ex("PD{#}"),
     )
     LaTeXForm(Ex("PD{#}"), Ex(r"\partial"))
@@ -1745,16 +1944,18 @@ def contracted_factor_latex(factor, coordinates, contraction_assignment):
         )
     elif kind == "GammaABC":
         base = tensor_with_indices_latex(
-            r"\Gamma",
+            DFT_GAMMA_DEFINITION.output_head.latex_name,
             [(idx[0], "down"), (idx[1], "down"), (idx[2], "up")],
         )
     elif kind in {"GammaLUp", "GammaRUp"}:
         base = tensor_with_indices_latex(
-            r"\Gamma", [(idx[0], "up"), *pair_slots(factor.indices[1])]
+            DFT_GAMMA_DEFINITION.output_head.latex_name,
+            [(idx[0], "up"), *pair_slots(factor.indices[1])]
         )
     elif kind in {"GammaLDown", "GammaRDown"}:
         base = tensor_with_indices_latex(
-            r"\Gamma", [(idx[0], "down"), *pair_slots(factor.indices[1])]
+            DFT_GAMMA_DEFINITION.output_head.latex_name,
+            [(idx[0], "down"), *pair_slots(factor.indices[1])]
         )
     elif kind == "Phi":
         base = tensor_with_indices_latex(
@@ -1766,16 +1967,17 @@ def contracted_factor_latex(factor, coordinates, contraction_assignment):
         )
     elif kind in {"RicL", "RicR"}:
         base = antisymmetric_pair_latex(
-            r"\mathfrak R", pair_slots(factor.indices[0])
+            DFT_CURVATURE_DEFINITION.output_head.latex_name,
+            pair_slots(factor.indices[0])
         )
     elif kind in {"MixRL", "MixLR"}:
         base = tensor_with_indices_latex(
-            r"\mathfrak R",
+            DFT_CURVATURE_DEFINITION.output_head.latex_name,
             [*pair_slots(factor.indices[0]), *pair_slots(factor.indices[1])],
         )
     elif kind in {"RiemannL", "RiemannR"}:
         base = tensor_with_indices_latex(
-            r"\mathfrak R",
+            DFT_CURVATURE_DEFINITION.output_head.latex_name,
             [*pair_slots(factor.indices[0]), *pair_slots(factor.indices[1])],
         )
     else:
@@ -2474,19 +2676,19 @@ def resolve_field_box_definitions(normalized, box_definition=None, field_box_def
 
 _CADABRA_FACTOR_HEAD = {
     "H": "H",
-    "GammaABC": "Gamma",
-    "GammaLUp": "Gamma",
-    "GammaRUp": "Gamma",
-    "GammaLDown": "Gamma",
-    "GammaRDown": "Gamma",
+    "GammaABC": DFT_GAMMA_DEFINITION.output_head,
+    "GammaLUp": DFT_GAMMA_DEFINITION.output_head,
+    "GammaRUp": DFT_GAMMA_DEFINITION.output_head,
+    "GammaLDown": DFT_GAMMA_DEFINITION.output_head,
+    "GammaRDown": DFT_GAMMA_DEFINITION.output_head,
     "Phi": "Phi",
     "BarPhi": "BarPhi",
-    "RicL": "Rfrak",
-    "RicR": "Rfrak",
-    "MixRL": "Rfrak",
-    "MixLR": "Rfrak",
-    "RiemannL": "Rfrak",
-    "RiemannR": "Rfrak",
+    "RicL": DFT_CURVATURE_DEFINITION.output_head,
+    "RicR": DFT_CURVATURE_DEFINITION.output_head,
+    "MixRL": DFT_CURVATURE_DEFINITION.output_head,
+    "MixLR": DFT_CURVATURE_DEFINITION.output_head,
+    "RiemannL": DFT_CURVATURE_DEFINITION.output_head,
+    "RiemannR": DFT_CURVATURE_DEFINITION.output_head,
 }
 
 
@@ -2509,6 +2711,106 @@ _CADABRA_FACTOR_INDEX_SHAPE = {
     "RiemannL": (None, None),
     "RiemannR": (None, None),
 }
+
+
+@dataclass(frozen=True)
+class DFTObjectAudit:
+    definition: DFTGeometryDefinition
+    connected: bool
+    factor_occurrences: int
+
+
+def dft_object_latex_chunks(dft_object):
+    """Render one immutable geometry-definition AST and its Box projections."""
+    if not isinstance(dft_object, DFTGeometryDefinition):
+        dft_object = get_dft_object(dft_object)
+    primary = dft_object.latex() + rf"\tag{{{dft_object.equation_number}}}"
+    Gamma = DFT_GAMMA_DEFINITION.output_head.latex_name
+    Riemann = DFT_CURVATURE_DEFINITION.output_head.latex_name
+    if dft_object is DFT_GAMMA_DEFINITION:
+        projection = (
+            r"\begin{aligned}"
+            + rf"{Gamma}_{{Cpq}}&\coloneqq{Gamma}_{{CAB}}V^A{{}}_pV^B{{}}_q,\\"
+            + rf"{Gamma}^C{{}}_{{pq}}&\coloneqq\mathcal J^{{CD}}{Gamma}_{{Dpq}},\\"
+            + rf"{Gamma}_{{C\bar p\bar q}}&\coloneqq{Gamma}_{{CAB}}"
+            + r"\bar V^A{}_{\bar p}\bar V^B{}_{\bar q}."
+            + r"\end{aligned}"
+        )
+        return primary, projection
+    properties = (
+        r"\begin{aligned}"
+        + rf"{Riemann}_{{ABCD}}&={Riemann}_{{[AB][CD]}},\\"
+        + rf"{Riemann}_{{AB}}&\coloneqq{Riemann}^C{{}}_{{ACB}},\\"
+        + rf"{Riemann}_{{pqrs}}&\coloneqq V^A{{}}_pV^B{{}}_qV^C{{}}_rV^D{{}}_s"
+        + rf"{Riemann}_{{ABCD}}."
+        + r"\end{aligned}\tag{3.11}"
+    )
+    semico = (
+        r"\begin{aligned}"
+        r"S_{ABCD}\coloneqq\frac12\left("
+        + rf"{Riemann}_{{ABCD}}+{Riemann}_{{CDAB}}"
+        + rf"-{Gamma}^E{{}}_{{AB}}{Gamma}_{{ECD}}\right)."
+        + r"\end{aligned}\tag{3.12}"
+    )
+    return primary, properties, semico
+
+
+def _calculation_trace_results(calculation):
+    if isinstance(calculation, TraceResult):
+        return (calculation,)
+    results = getattr(calculation, "field_results", None)
+    if results is not None:
+        return tuple(results)
+    trace_result = getattr(calculation, "trace_result", None)
+    if trace_result is not None:
+        return (trace_result,)
+    raise TypeError(
+        "calculation must be a TraceResult, FieldVariableSet, "
+        "FieldTraceVariable, or CombinationResult"
+    )
+
+
+def audit_dft_object_connection(dft_object, calculations):
+    """Prove that rendered and calculated factors use the identical head object."""
+    if not isinstance(dft_object, DFTGeometryDefinition):
+        dft_object = get_dft_object(dft_object)
+    if not isinstance(calculations, (tuple, list)):
+        calculations = (calculations,)
+    occurrence_count = 0
+    for calculation in calculations:
+        calculation_count = 0
+        for result in _calculation_trace_results(calculation):
+            for row in result.terms:
+                for factor_key in row.body_key[1]:
+                    head = _CADABRA_FACTOR_HEAD.get(factor_key[0])
+                    if head is dft_object.output_head:
+                        calculation_count += 1
+        if calculation_count == 0:
+            raise AssertionError(
+                f"{dft_object.name} head is absent from a supplied calculation"
+            )
+        occurrence_count += calculation_count
+    return DFTObjectAudit(
+        definition=dft_object,
+        connected=bool(calculations) and occurrence_count > 0,
+        factor_occurrences=occurrence_count,
+    )
+
+
+def show_dft_object(dft_object, calculations=()):
+    """Display a geometry object and optionally audit live trace connectivity."""
+    if not isinstance(dft_object, DFTGeometryDefinition):
+        dft_object = get_dft_object(dft_object)
+    chunks = dft_object_latex_chunks(dft_object)
+    _show_latex_or_text(chunks)
+    if calculations:
+        audit = audit_dft_object_connection(dft_object, calculations)
+        print(
+            f"CONNECTED: {dft_object.output_head.cadabra_name} uses the same "
+            f"TensorHeadDefinition in {audit.factor_occurrences} live row factors."
+        )
+        return audit
+    return chunks
 
 
 def _cadabra_local_index(endpoint):
@@ -2564,7 +2866,10 @@ def _cadabra_factor_source(factor_key):
         else:
             raise ValueError(f"Unsupported factor-key index: {descriptor_kind}")
 
-    source = _cadabra_indexed_tensor(_CADABRA_FACTOR_HEAD[kind], slots)
+    head = _CADABRA_FACTOR_HEAD[kind]
+    if isinstance(head, TensorHeadDefinition):
+        head = head.cadabra_name
+    source = _cadabra_indexed_tensor(head, slots)
     # These are genuine Cadabra PartialDerivative applications to the
     # background tensor.  All tensor heads carry Depends(PD{#}) in the current
     # scope, so no derivative is discarded as a constant.
@@ -2885,6 +3190,19 @@ def sum_trace_combination(
 
 
 __all__ = [
+    "TensorHeadDefinition",
+    "GeometryDefinitionTerm",
+    "DFTGeometryDefinition",
+    "DFT_GAMMA_HEAD",
+    "DFT_CURVATURE_HEAD",
+    "DFT_GAMMA_DEFINITION",
+    "DFT_CURVATURE_DEFINITION",
+    "DFT_BACKGROUND_OBJECT_REGISTRY",
+    "DFTObjectAudit",
+    "get_dft_object",
+    "dft_object_latex_chunks",
+    "audit_dft_object_connection",
+    "show_dft_object",
     "TensorBodyFactor",
     "TensorBodyMonomial",
     "BoxTensorBody",

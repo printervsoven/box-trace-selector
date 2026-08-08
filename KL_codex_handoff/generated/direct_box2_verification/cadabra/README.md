@@ -203,6 +203,36 @@ therefore be a bug, not a stronger negative control. The T-only structural
 replacement produces 1,987 pre-collection summands and leaves 107 nonzero
 coefficient rows / 91 Cadabra-canonical residual tensor structures.
 
+## DFT background geometry objects
+
+The notebook's final section displays the immutable `main.pdf` background
+objects used by the trace engine:
+
+```python
+GammaDFT = get_dft_object("Gamma")   # main.pdf (3.7)
+RDFT = get_dft_object("R")           # main.pdf (3.10)
+
+GAMMA_CONNECTED = show_dft_object(
+    GammaDFT, calculations=(PREPARED, MODIFIED_PREPARED)
+)
+R_CONNECTED = show_dft_object(
+    RDFT, calculations=(PREPARED, MODIFIED_PREPARED)
+)
+```
+
+Their renderers show the complete DFT-Christoffel definition, curvature
+definition, local `Gamma_Cpq`, raised `Gamma^C_pq`, and `R_pqrs` projections,
+plus the curvature antisymmetry, Ricci contraction, and semi-covariant `S`
+definition. The `CONNECTED` audit walks the live trace rows and requires the
+calculation factors to reference the same `TensorHeadDefinition` objects used
+by these renderers; it is not a display-string comparison.
+
+The current trace expansion keeps `Gamma` and `Rfrak` as background
+primitives. It does not substitute equations (3.7) and (3.10) into every row
+and re-expand them into `P`, `barP`, and `d`. `R_pqrs` uses antisymmetry inside
+each index pair only; pair-exchange symmetry and Bianchi identities are not
+assumed.
+
 ## Headless verification
 
 Run from this directory inside WSL:

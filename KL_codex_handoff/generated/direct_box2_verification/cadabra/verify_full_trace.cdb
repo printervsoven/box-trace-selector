@@ -165,6 +165,47 @@ for field_name, (expected_count, provenance, derivative_counts) in n2_expected.i
 print("PASS every n=1/n=2 single-field final-term inventory")
 
 
+GammaDFT = get_dft_object("Gamma")
+RDFT = get_dft_object("R")
+assert GammaDFT is DFT_GAMMA_DEFINITION
+assert RDFT is DFT_CURVATURE_DEFINITION
+assert GammaDFT.output_head is DFT_GAMMA_HEAD
+assert RDFT.output_head is DFT_CURVATURE_HEAD
+assert DFT_GAMMA_HEAD in RDFT.dependencies
+gamma_geometry_source = "".join(dft_object_latex_chunks(GammaDFT))
+curvature_geometry_source = "".join(dft_object_latex_chunks(RDFT))
+for required in (
+    r"\Gamma_{CAB}",
+    r"2\left(P\partial_CP\bar P\right)_{[AB]}",
+    r"\partial_D d",
+    r"\tag{3.7}",
+    r"\Gamma_{Cpq}&\coloneqq\Gamma_{CAB}V^A{}_pV^B{}_q",
+):
+    assert required in gamma_geometry_source, required
+for required in (
+    r"\mathfrak R^C{}_{DAB}",
+    r"\partial_A\Gamma_B{}^C{}_D",
+    r"{}-\partial_B\Gamma_A{}^C{}_D",
+    r"\mathfrak R_{ABCD}&=\mathfrak R_{[AB][CD]}",
+    r"\mathfrak R_{AB}&\coloneqq\mathfrak R^C{}_{ACB}",
+    r"\tag{3.10}",
+):
+    assert required in curvature_geometry_source, required
+for factor_kind in (
+    "GammaABC", "GammaLUp", "GammaRUp", "GammaLDown", "GammaRDown"
+):
+    assert _CADABRA_FACTOR_HEAD[factor_kind] is GammaDFT.output_head
+for factor_kind in ("RicL", "RicR", "MixRL", "MixLR", "RiemannL", "RiemannR"):
+    assert _CADABRA_FACTOR_HEAD[factor_kind] is RDFT.output_head
+assert TensorBodyFactor("GammaUp", ("coordinate", "pair1")).tensor_head is (
+    GammaDFT.output_head
+)
+assert TensorBodyFactor("Riemann", ("pair1", "pair2")).tensor_head is (
+    RDFT.output_head
+)
+print("PASS main.pdf (3.7)/(3.10) geometry objects share live calculation heads")
+
+
 box_chunks = box_definition_latex_chunks()
 assert len(box_chunks) == 3
 main_box_source = "".join(box_chunks)
@@ -361,6 +402,10 @@ actual_tensor_source = " ".join(
 )
 for actual_head in ("H", "Gamma", "Phi", "Rfrak", r"\partial"):
     assert actual_head in actual_tensor_source, actual_head
+gamma_live_audit = audit_dft_object_connection(GammaDFT, (prepared8,))
+curvature_live_audit = audit_dft_object_connection(RDFT, (prepared8,))
+assert gamma_live_audit.connected and gamma_live_audit.factor_occurrences > 0
+assert curvature_live_audit.connected and curvature_live_audit.factor_occurrences > 0
 totalTr = F1 + F2 + F3 + F4 + F5 + F6 + F7 + F8
 assert cadabra_term_count(totalTr) == 1994
 distribute(totalTr)
