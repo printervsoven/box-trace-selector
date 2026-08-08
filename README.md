@@ -40,9 +40,11 @@ KL_codex_handoff\generated\direct_box2_verification\cadabra
 
 After the WSL environment is installed, double-click
 `run_cadabra_jupyter.cmd`. It opens `full_trace_verification.ipynb`, whose
-`trace_terms(field,n)` function prints every final term and whose
-`sum_trace_combination(combination,n)` function sends every weighted term to
-Cadabra before collecting the exact residual. The headless full test is:
+input cell sets `N` and the eight `(field, weight)` pairs. The notebook displays
+the direct Box definition and every field-specialized Box, stores the fully
+expanded weighted traces in `F1` through `F8`, and visibly executes
+`totalTr = F1 + ... + F8` before Cadabra collects the exact residual. The
+headless full test is:
 
 ```bash
 cadabra2 -q verify_full_trace.cdb

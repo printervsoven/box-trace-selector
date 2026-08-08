@@ -22,10 +22,10 @@ authentication enabled.
 ## Main files
 
 - `full_trace_calculator.cdb` — independent full expansion engine and public
-  `trace_terms(field,n)` / `sum_trace_combination(combination,n)` functions.
+  Box-display, field-variable, trace, and cancellation functions.
 - `full_trace_verification.ipynb` — interactive calculator. Its default cells
-  print all 404 terms of `T,n=2`, all 1,994 rows of the eight-field sum, and all
-  404 coefficientwise cancellation identities.
+  display the direct Box definition, all eight field-specialized Boxes, all
+  1,994 weighted field rows, and all 404 cancellation identities.
 - `verify_full_trace.cdb` — headless acceptance suite, including an independent
   Cadabra gamma-algebra comparison and a perturbed-weight negative control.
 - `box2_verification.ipynb` and `verify_box2_smoke.cdb` — the earlier compact
@@ -33,14 +33,27 @@ authentication enabled.
 
 ## Interactive use
 
-Open `full_trace_verification.ipynb` with the Cadabra2 kernel. The two public
-calls are:
+Open `full_trace_verification.ipynb` with the Cadabra2 kernel. The visible
+workflow is:
 
 ```python
-trace_terms("T", 2)
+show_box_definition()
+show_field_boxes(FIELD_COMBINATION)
 
-sum_trace_combination(EIGHT_FIELD_COMBINATION, 2)
+PREPARED = prepare_field_variables(FIELD_COMBINATION, N)
+F1, F2, F3, F4, F5, F6, F7, F8 = PREPARED.weighted_expressions
+
+totalTr = F1 + F2 + F3 + F4 + F5 + F6 + F7 + F8
+distribute(totalTr)
+canonicalise(totalTr)
+collect_terms(totalTr)
+assert totalTr == 0
 ```
+
+The input cell contains `N` and the eight explicit `(field, weight)` tuples,
+so both can be edited before the later cells are run. `prepare_field_variables`
+prints every fully Einstein-contracted term before storing the weighted
+Cadabra expressions in `F1` through `F8`.
 
 `trace_terms` accepts `T`, `phi`, `BLL`, `BRR`, `UL`, `UR`, `ULLR`, `ULRR`,
 and the four-field representations `B`, `U`, `chi`. Only `n=1` and `n=2` are
@@ -76,7 +89,8 @@ coefficient-by-coefficient with the standalone recursion used by the engine.
 The engine starts from the single-Box coefficient blocks, composes ordered
 differential operators with the complete Leibniz rule, expands total
 generators into raw left/right spinor slots, applies the right-sector reversal
-and `-1/2` normalization, evaluates every chiral Clifford trace, and absorbs
+and `-1/2` normalization (displayed as the transpose action on each
+`bar S*` slot), evaluates every chiral Clifford trace, and absorbs
 all local metrics into explicit upper/lower Einstein dummy indices. Final rows
 contain only the paper-level `H`, `Gamma`, `Phi`, barred `Phi`, curvature and
 ordinary-partial notation; no covariant-D, total-generator, gamma-trace, eta,

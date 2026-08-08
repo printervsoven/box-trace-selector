@@ -1172,6 +1172,165 @@ FIELD_LATEX = {
 }
 
 
+def box_definition_latex_chunks():
+    """Return the direct single-Box definition encoded by this calculator."""
+    return (
+        r"\begin{aligned}"
+        r"\Box_X={}&\mathcal H^{AB}\partial_A\partial_B"
+        r"+\mathcal A_X^C\partial_C+\mathcal B_X,\\"
+        r"\mathcal A_X^C={}&h^C\mathbf 1_X"
+        r"+u^C{}_{pq}G_X^{pq}"
+        r"+\bar u^C{}_{\bar p\bar q}\bar G_X^{\bar p\bar q},\\"
+        r"\mathcal B_X={}&b_{pq}G_X^{pq}"
+        r"+\bar b_{\bar p\bar q}\bar G_X^{\bar p\bar q}"
+        r"+b_{pq,rs}G_X^{pq}G_X^{rs}"
+        r"+\bar b_{\bar p\bar q,\bar r\bar s}"
+        r"\bar G_X^{\bar p\bar q}\bar G_X^{\bar r\bar s}"
+        r"+b_{pq,\bar r\bar s}G_X^{pq}\bar G_X^{\bar r\bar s}."
+        r"\end{aligned}",
+        r"\begin{aligned}"
+        r"h^C={}&\mathcal H^{MN}\Gamma_{MN}{}^C,\\"
+        r"u^C{}_{pq}={}&\mathcal H^{CM}\Phi_{Mpq}-\Gamma^C{}_{pq},\\"
+        r"\bar u^C{}_{\bar p\bar q}={}&"
+        r"\mathcal H^{CM}\bar\Phi_{M\bar p\bar q}"
+        r"+\Gamma^C{}_{\bar p\bar q},\\"
+        r"b_{pq}={}&\mathfrak R_{[pq]}"
+        r"+\frac12\mathcal H^{MN}\partial_M\Phi_{Npq}"
+        r"+\frac12\mathcal H^{MN}\Gamma_{MN}{}^C\Phi_{Cpq},\\"
+        r"\bar b_{\bar p\bar q}={}&-\mathfrak R_{[\bar p\bar q]}"
+        r"+\frac12\mathcal H^{MN}\partial_M\bar\Phi_{N\bar p\bar q}"
+        r"+\frac12\mathcal H^{MN}\Gamma_{MN}{}^C"
+        r"\bar\Phi_{C\bar p\bar q}."
+        r"\end{aligned}",
+        r"\begin{aligned}"
+        r"b_{pq,rs}={}&\frac14\mathcal H^{MN}\Phi_{Mpq}\Phi_{Nrs}"
+        r"-\frac12\Gamma^C{}_{pq}\Phi_{Crs}"
+        r"+\frac14\Gamma_{Apq}\Gamma^A{}_{rs},\\"
+        r"\bar b_{\bar p\bar q,\bar r\bar s}={}&"
+        r"\frac14\mathcal H^{MN}\bar\Phi_{M\bar p\bar q}"
+        r"\bar\Phi_{N\bar r\bar s}"
+        r"+\frac12\Gamma^C{}_{\bar p\bar q}\bar\Phi_{C\bar r\bar s}"
+        r"-\frac14\Gamma_{A\bar p\bar q}\Gamma^A{}_{\bar r\bar s},\\"
+        r"b_{pq,\bar r\bar s}={}&"
+        r"\frac12\mathcal H^{MN}\Phi_{Mpq}\bar\Phi_{N\bar r\bar s}"
+        r"-\frac12\Gamma^C{}_{pq}\bar\Phi_{C\bar r\bar s}"
+        r"+\frac12\Gamma^C{}_{\bar r\bar s}\Phi_{Cpq}"
+        r"+\frac12\mathfrak R_{\bar r\bar s pq}"
+        r"-\frac12\mathfrak R_{pq\bar r\bar s}."
+        r"\end{aligned}",
+    )
+
+
+def _show_latex_or_text(chunks):
+    if _in_ipython():
+        _display_latex_chunks(chunks)
+    else:
+        for chunk in chunks:
+            print(chunk)
+
+
+def show_box_definition():
+    """Display the direct Box definition and all eight coefficient blocks."""
+    chunks = box_definition_latex_chunks()
+    _show_latex_or_text(chunks)
+    return chunks
+
+
+def _generator_definition_latex(field, sector):
+    label = FIELD_LATEX[field.name]
+    if sector == "L":
+        if field.a == 0:
+            return rf"G_{{{label}}}^{{pq}}=0"
+        if field.a == 1:
+            return rf"G_{{{label}}}^{{pq}}=\frac12\gamma^{{pq}}"
+        return (
+            rf"G_{{{label}}}^{{pq}}="
+            rf"\frac12\sum_{{r=1}}^{{{field.a}}}\gamma_{{(r)}}^{{pq}}"
+        )
+    if sector == "R":
+        if field.b == 0:
+            return rf"\bar G_{{{label}}}^{{\bar p\bar q}}=0"
+        if field.b == 1:
+            return (
+                rf"\bar G_{{{label}}}^{{\bar p\bar q}}="
+                rf"-\frac12\left(\bar\gamma^{{\bar p\bar q}}\right)^{{\mathsf T}}"
+            )
+        return (
+            rf"\bar G_{{{label}}}^{{\bar p\bar q}}="
+            rf"-\frac12\sum_{{s=1}}^{{{field.b}}}"
+            rf"\left(\bar\gamma_{{(s)}}^{{\bar p\bar q}}\right)^{{\mathsf T}}"
+        )
+    raise ValueError(f"Unknown generator sector: {sector}")
+
+
+def field_box_latex(field):
+    """Specialize the direct Box to one raw (a,b) tensor-spinor field."""
+    field = resolve_field(field)
+    label = FIELD_LATEX[field.name]
+    identity = rf"\mathbf 1_{{{label}}}"
+    left = rf"G_{{{label}}}"
+    right = rf"\bar G_{{{label}}}"
+
+    first_order = [rf"h^C{identity}"]
+    if field.a:
+        first_order.append(rf"u^C{{}}_{{pq}}{left}^{{pq}}")
+    if field.b:
+        first_order.append(
+            rf"\bar u^C{{}}_{{\bar p\bar q}}{right}^{{\bar p\bar q}}"
+        )
+
+    zeroth_order = []
+    if field.a:
+        zeroth_order.extend(
+            (
+                rf"b_{{pq}}{left}^{{pq}}",
+                rf"b_{{pq,rs}}{left}^{{pq}}{left}^{{rs}}",
+            )
+        )
+    if field.b:
+        zeroth_order.extend(
+            (
+                rf"\bar b_{{\bar p\bar q}}{right}^{{\bar p\bar q}}",
+                rf"\bar b_{{\bar p\bar q,\bar r\bar s}}"
+                rf"{right}^{{\bar p\bar q}}{right}^{{\bar r\bar s}}",
+            )
+        )
+    if field.a and field.b:
+        zeroth_order.append(
+            rf"b_{{pq,\bar r\bar s}}{left}^{{pq}}{right}^{{\bar r\bar s}}"
+        )
+
+    box_rhs = (
+        r"\mathcal H^{AB}\partial_A\partial_B"
+        + r"+\left[" + "+".join(first_order) + r"\right]\partial_C"
+    )
+    if zeroth_order:
+        box_rhs += "+" + "+".join(zeroth_order)
+    representation = (
+        rf"\Psi_{{{label}}}\in S^{{\otimes {field.a}}}"
+        rf"\otimes(\bar S^*)^{{\otimes {field.b}}}"
+    )
+    return (
+        r"\begin{aligned}"
+        + representation
+        + r",\qquad "
+        + _generator_definition_latex(field, "L")
+        + r",\qquad "
+        + _generator_definition_latex(field, "R")
+        + r",\\"
+        + rf"\Box_{{{label}}}={box_rhs}."
+        + r"\end{aligned}"
+    )
+
+
+def show_field_boxes(combination):
+    """Display the field-specialized Box for every input representation."""
+    normalized = normalize_combination(combination)
+    chunks = tuple(field_box_latex(field) for field, _weight in normalized)
+    _show_latex_or_text(chunks)
+    return chunks
+
+
 def trace_lhs_latex(result):
     power = r"\Box" if result.n == 1 else r"\Box\circ\Box"
     return rf"\operatorname{{tr}}_{{{FIELD_LATEX[result.field.name]}}}\!\left({power}\right)"
@@ -1269,10 +1428,53 @@ class CancellationRow:
 
 
 @dataclass(frozen=True)
+class FieldTraceVariable:
+    name: str
+    field: FieldSpec
+    weight: Fraction
+    trace_result: TraceResult
+    unweighted_expression: object
+    weighted_expression: object
+
+    @property
+    def term_count(self):
+        return self.trace_result.term_count
+
+
+@dataclass(frozen=True)
+class FieldVariableSet:
+    n: int
+    combination: tuple[tuple[FieldSpec, Fraction], ...]
+    field_results: tuple[TraceResult, ...]
+    variables: tuple[FieldTraceVariable, ...]
+    terms: tuple[tuple[str, Fraction, TraceRow], ...]
+    ledger: tuple[CancellationRow, ...]
+    symbols: dict
+    bodies: dict
+
+    @property
+    def term_count(self):
+        return len(self.terms)
+
+    @property
+    def canonical_keys(self):
+        return len(self.ledger)
+
+    @property
+    def weighted_expressions(self):
+        return tuple(variable.weighted_expression for variable in self.variables)
+
+    @property
+    def variable_names(self):
+        return tuple(variable.name for variable in self.variables)
+
+
+@dataclass(frozen=True)
 class CombinationResult:
     n: int
     combination: tuple[tuple[FieldSpec, Fraction], ...]
     field_results: tuple[TraceResult, ...]
+    field_variables: tuple[FieldTraceVariable, ...]
     terms: tuple[tuple[str, Fraction, TraceRow], ...]
     ledger: tuple[CancellationRow, ...]
     cadabra_expanded_sum: object
@@ -1335,6 +1537,148 @@ def _cadabra_field_expression(result, symbols):
     return Ex(" + ".join(rendered))
 
 
+def _weighted_trace_latex_chunks(variable, terms_per_chunk=15):
+    if terms_per_chunk < 1:
+        raise ValueError("terms_per_chunk must be positive")
+    result = variable.trace_result
+    weighted_rows = tuple(
+        (variable.weight * row.coefficient, row.body_latex)
+        for row in result.terms
+    )
+    trace_lhs = trace_lhs_latex(result)
+    weight_latex = fraction_latex(variable.weight)
+    lhs = rf"{variable.name}\equiv\left({weight_latex}\right){trace_lhs}"
+    chunks = []
+    for start in range(0, len(weighted_rows), terms_per_chunk):
+        selected = weighted_rows[start : start + terms_per_chunk]
+        lines = []
+        for offset, (coefficient, body) in enumerate(selected):
+            absolute_index = start + offset
+            if absolute_index == 0:
+                prefix = lhs + "&="
+                rendered = signed_latex_term(coefficient, body, first=True)
+            else:
+                prefix = r"&\quad"
+                rendered = signed_latex_term(coefficient, body)
+            lines.append(prefix + rendered)
+        chunks.append(r"\begin{aligned}" + r"\\".join(lines) + r"\end{aligned}")
+    return tuple(chunks)
+
+
+def prepare_field_variables(
+    combination,
+    n,
+    show=True,
+    show_field_boxes_first=False,
+    terms_per_chunk=15,
+):
+    """Create weighted, fully expanded Cadabra variables F1, F2, ... .
+
+    Every variable contains one field's *complete* representation trace
+    multiplied by the single overall field weight supplied in ``combination``.
+    All variables share the same K0001... basis, whose full tensor-body map is
+    retained in ``ledger`` and ``bodies``.  No cross-field sum is performed by
+    this function; the caller can therefore execute ``totalTr=F1+...`` visibly.
+    """
+    n = int(n)
+    normalized = normalize_combination(combination)
+    field_results = tuple(build_trace_result(field, n) for field, _weight in normalized)
+    union_keys = sorted(
+        {row.body_key for result in field_results for row in result.terms},
+        key=lambda key: (-key[0], repr(key)),
+    )
+    symbols = {key: f"K{index:04d}" for index, key in enumerate(union_keys, 1)}
+    bodies = {
+        row.body_key: row.body_latex
+        for result in field_results
+        for row in result.terms
+    }
+    expanded_terms = tuple(
+        (result.field.name, weight, row)
+        for result, (_field, weight) in zip(field_results, normalized)
+        for row in result.terms
+    )
+
+    field_coefficients = {
+        result.field.name: {row.body_key: row.coefficient for row in result.terms}
+        for result in field_results
+    }
+    ledger = []
+    for key in union_keys:
+        contributions = []
+        residual = Fraction(0)
+        for field, weight in normalized:
+            unweighted = field_coefficients[field.name].get(key, Fraction(0))
+            if not unweighted:
+                continue
+            weighted = weight * unweighted
+            contributions.append((field.name, weighted))
+            residual += weighted
+        ledger.append(
+            CancellationRow(
+                symbol=symbols[key],
+                derivative_order=key[0],
+                body_key=key,
+                body_latex=bodies[key],
+                contributions=tuple(contributions),
+                residual=residual,
+            )
+        )
+
+    variables = []
+    for index, (result, (field, weight)) in enumerate(
+        zip(field_results, normalized), 1
+    ):
+        unweighted_expression = _cadabra_field_expression(result, symbols)
+        weighted_expression = Ex(fraction_text(weight)) * unweighted_expression.copy()
+        distribute(weighted_expression)
+        variables.append(
+            FieldTraceVariable(
+                name=f"F{index}",
+                field=field,
+                weight=weight,
+                trace_result=result,
+                unweighted_expression=unweighted_expression,
+                weighted_expression=weighted_expression,
+            )
+        )
+
+    prepared = FieldVariableSet(
+        n=n,
+        combination=normalized,
+        field_results=field_results,
+        variables=tuple(variables),
+        terms=expanded_terms,
+        ledger=tuple(ledger),
+        symbols=symbols,
+        bodies=bodies,
+    )
+    if show:
+        if show_field_boxes_first:
+            show_field_boxes(normalized)
+        print(
+            f"Prepared {len(prepared.variables)} weighted Cadabra variables "
+            f"with {prepared.term_count} fully expanded terms."
+        )
+        for variable in prepared.variables:
+            print(
+                f"{variable.name}: field={variable.field.name}, "
+                f"weight={fraction_text(variable.weight)}, "
+                f"terms={variable.term_count}"
+            )
+            _show_latex_or_text(
+                _weighted_trace_latex_chunks(variable, terms_per_chunk)
+            )
+    return prepared
+
+
+def cadabra_term_count(expression):
+    """Count additive Cadabra summands without collecting them."""
+    if expression == 0:
+        return 0
+    return sum(1 for _node in expression.top().terms())
+
+
 def _cadabra_weighted_sum(field_results, normalized, symbols):
     total = Ex("0")
     for result, (_field, weight) in zip(field_results, normalized):
@@ -1385,65 +1729,27 @@ def sum_trace_combination(
     expression is built from every input row before ``collect_terms`` is run.
     """
     n = int(n)
-    normalized = normalize_combination(combination)
-    field_results = tuple(
-        trace_terms(field, n, show=show and show_field_traces, terms_per_chunk=terms_per_chunk)
-        for field, _weight in normalized
+    prepared = prepare_field_variables(
+        combination,
+        n,
+        show=show and show_field_traces,
+        terms_per_chunk=terms_per_chunk,
     )
-
-    union_keys = sorted(
-        {row.body_key for result in field_results for row in result.terms},
-        key=lambda key: (-key[0], repr(key)),
-    )
-    symbols = {key: f"K{index:04d}" for index, key in enumerate(union_keys, 1)}
-    bodies = {
-        row.body_key: row.body_latex
-        for result in field_results
-        for row in result.terms
-    }
-    expanded_terms = tuple(
-        (result.field.name, weight, row)
-        for result, (_field, weight) in zip(field_results, normalized)
-        for row in result.terms
-    )
-
-    field_coefficients = {
-        result.field.name: {row.body_key: row.coefficient for row in result.terms}
-        for result in field_results
-    }
-    ledger = []
-    for key in union_keys:
-        contributions = []
-        residual = Fraction(0)
-        for field, weight in normalized:
-            unweighted = field_coefficients[field.name].get(key, Fraction(0))
-            if not unweighted:
-                continue
-            weighted = weight * unweighted
-            contributions.append((field.name, weighted))
-            residual += weighted
-        ledger.append(
-            CancellationRow(
-                symbol=symbols[key],
-                derivative_order=key[0],
-                body_key=key,
-                body_latex=bodies[key],
-                contributions=tuple(contributions),
-                residual=residual,
-            )
-        )
+    normalized = prepared.combination
+    field_results = prepared.field_results
 
     (
         cadabra_expanded_sum,
         cadabra_precollection_terms,
         cadabra_residual,
-    ) = _cadabra_weighted_sum(field_results, normalized, symbols)
+    ) = _cadabra_weighted_sum(field_results, normalized, prepared.symbols)
     result = CombinationResult(
         n=n,
         combination=normalized,
         field_results=field_results,
-        terms=expanded_terms,
-        ledger=tuple(ledger),
+        field_variables=prepared.variables,
+        terms=prepared.terms,
+        ledger=prepared.ledger,
         cadabra_expanded_sum=cadabra_expanded_sum,
         cadabra_precollection_terms=cadabra_precollection_terms,
         cadabra_residual=cadabra_residual,
@@ -1483,8 +1789,15 @@ __all__ = [
     "FOUR_FIELD_COMBINATION",
     "TraceRow",
     "TraceResult",
+    "FieldTraceVariable",
+    "FieldVariableSet",
     "CombinationResult",
+    "show_box_definition",
+    "field_box_latex",
+    "show_field_boxes",
     "trace_terms",
+    "prepare_field_variables",
+    "cadabra_term_count",
     "sum_trace_combination",
     "build_trace_result",
 ]

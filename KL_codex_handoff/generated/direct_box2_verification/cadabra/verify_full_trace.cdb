@@ -164,6 +164,47 @@ for field_name, (expected_count, provenance, derivative_counts) in n2_expected.i
 print("PASS every n=1/n=2 single-field final-term inventory")
 
 
+box_chunks = box_definition_latex_chunks()
+assert len(box_chunks) == 3
+assert r"\Box_X" in box_chunks[0]
+assert all(symbol in "".join(box_chunks) for symbol in ("h^C", "u^C", "b_{pq}", "b_{pq,rs}"))
+field_boxes = tuple(field_box_latex(field) for field, _weight in normalize_combination(EIGHT_FIELD_COMBINATION))
+assert len(field_boxes) == 8
+assert r"G_{\phi}^{pq}=0" in field_boxes[1]
+assert r"\bar G_{\phi}^{\bar p\bar q}=0" in field_boxes[1]
+assert r"\bar G_{B_{LL}}^{\bar p\bar q}=0" in field_boxes[2]
+assert r"G_{B_{RR}}^{pq}=0" in field_boxes[3]
+assert r"\left(\bar\gamma^{\bar p\bar q}\right)^{\mathsf T}" in field_boxes[0]
+assert r"\left(\bar\gamma_{(s)}^{\bar p\bar q}\right)^{\mathsf T}" in field_boxes[7]
+print("PASS direct Box definition and all eight field-specialized Boxes")
+
+
+prepared8 = prepare_field_variables(EIGHT_FIELD_COMBINATION, 2, show=False)
+assert prepared8.variable_names == ("F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8")
+assert tuple(variable.term_count for variable in prepared8.variables) == (
+    404, 14, 192, 192, 192, 192, 404, 404
+)
+F1, F2, F3, F4, F5, F6, F7, F8 = prepared8.weighted_expressions
+totalTr = F1 + F2 + F3 + F4 + F5 + F6 + F7 + F8
+assert cadabra_term_count(totalTr) == 1994
+distribute(totalTr)
+canonicalise(totalTr)
+collect_terms(totalTr)
+assert totalTr == 0
+print("PASS visible workflow: totalTr = F1 + ... + F8 -> 0")
+
+
+prepared8_n1 = prepare_field_variables(EIGHT_FIELD_COMBINATION, 1, show=False)
+F1n1, F2n1, F3n1, F4n1, F5n1, F6n1, F7n1, F8n1 = prepared8_n1.weighted_expressions
+totalTr_n1 = F1n1 + F2n1 + F3n1 + F4n1 + F5n1 + F6n1 + F7n1 + F8n1
+assert cadabra_term_count(totalTr_n1) == 46
+distribute(totalTr_n1)
+canonicalise(totalTr_n1)
+collect_terms(totalTr_n1)
+assert totalTr_n1 == 0
+print("PASS same visible F1...F8 workflow for n=1 -> 0")
+
+
 combo8_n2 = sum_trace_combination(EIGHT_FIELD_COMBINATION, 2, show=False)
 assert combo8_n2.term_count == 1994
 assert combo8_n2.cadabra_precollection_terms == 1994
