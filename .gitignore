@@ -1,0 +1,18 @@
+# Local and generated files
+tmp/
+**/__pycache__/
+*.py[cod]
+
+# Research source material and conversation exports stay local.
+KL_codex_handoff/attachments/
+KL_codex_handoff/conversation/
+KL_codex_handoff/SHA256SUMS.txt
+
+# Reproducible generated artifacts.
+KL_codex_handoff/generated/archive/
+KL_codex_handoff/generated/direct_box2_verification/interactive_results/
+KL_codex_handoff/generated/direct_box2_verification/*.csv
+KL_codex_handoff/generated/direct_box2_verification/*.json
+KL_codex_handoff/generated/direct_box2_verification/*.txt
+KL_codex_handoff/generated/direct_box2_verification/*.pdf
+KL_codex_handoff/generated/direct_box2_verification/*.tex
