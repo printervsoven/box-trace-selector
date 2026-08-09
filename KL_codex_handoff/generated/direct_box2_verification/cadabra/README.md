@@ -154,10 +154,13 @@ Later input cells contain `N` and the eight explicit `(field, weight)` tuples.
 All of these can be edited before the later cells are run. `prepare_field_variables`
 prints every fully Einstein-contracted term before storing the weighted
 Cadabra expressions in `F1` through `F8`. Those variables contain the actual
-`H`, `Gamma`, `Phi`, `BarPhi`, `Rfrak`, and partial-derivative tensor ASTs;
-`K0001...` labels are never used inside the expressions. External
-right-acting derivatives are represented by their action on one common
-arbitrary scalar `Probe`, so every Cadabra term is a fully contracted scalar.
+internal `H`, `Gamma`, `Phi`, `BarPhi`, `Rfrak`, and derivative tensor ASTs;
+`K0001...` labels are never used inside the expressions. Their registered
+LaTeX heads display as `\mathcal H`, `\Gamma`, `\Phi`, `\bar\Phi`,
+`\mathfrak R`, and `\partial`, so printing `F1;` exposes no internal English
+head names. External right-acting derivatives are contracted `ExtD` factors
+rendered directly as `\partial_A`, so every Cadabra term remains a scalar
+without displaying an auxiliary probe field.
 
 `trace_terms` accepts `T`, `phi`, `BLL`, `BRR`, `UL`, `UR`, `ULLR`, `ULRR`,
 and the four-field representations `B`, `U`, `chi`. Only `n=1` and `n=2` are

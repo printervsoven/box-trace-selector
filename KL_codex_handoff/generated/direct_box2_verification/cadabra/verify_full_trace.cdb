@@ -400,8 +400,16 @@ for variable, expression in zip(prepared8.variables, (F1, F2, F3, F4, F5, F6, F7
 actual_tensor_source = " ".join(
     expression._latex_() for expression in (F1, F2, F3, F4, F5, F6, F7, F8)
 )
-for actual_head in ("H", "Gamma", "Phi", "Rfrak", r"\partial"):
+for actual_head in (
+    r"\mathcal{H}", r"\Gamma", r"\Phi", r"\bar{\Phi}",
+    r"\mathfrak{R}", r"\partial",
+):
     assert actual_head in actual_tensor_source, actual_head
+for internal_head in ("BarPhi", "Rfrak", "ExtD", "Probe"):
+    assert internal_head not in actual_tensor_source, internal_head
+assert re.search(r"(?<!\\)\bGamma\b", actual_tensor_source) is None
+assert re.search(r"(?<!\\)\bPhi\b", actual_tensor_source) is None
+assert r"\partial_{" in actual_tensor_source
 gamma_live_audit = audit_dft_object_connection(GammaDFT, (prepared8,))
 curvature_live_audit = audit_dft_object_connection(RDFT, (prepared8,))
 assert gamma_live_audit.connected and gamma_live_audit.factor_occurrences > 0

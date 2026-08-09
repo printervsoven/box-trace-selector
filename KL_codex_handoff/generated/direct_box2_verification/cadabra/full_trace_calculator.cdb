@@ -702,14 +702,23 @@ def _ensure_cadabra_tensor_properties():
     )
     Indices(Ex("{l0,l1,l2,l3}"), Ex("left_lorentz, position=fixed"))
     Indices(Ex("{r0,r1,r2,r3}"), Ex("right_lorentz, position=fixed"))
-    PartialDerivative(Ex("PD{#}"), Ex(""))
     gamma_name = DFT_GAMMA_DEFINITION.output_head.cadabra_name
     curvature_name = DFT_CURVATURE_DEFINITION.output_head.cadabra_name
+    # The replacement must be a quoted Cadabra string.  An unquoted Ex such
+    # as Ex(r"\Gamma") replaces the entire matched node and drops its indices
+    # and arguments; the quoted form renames only the printable tensor head.
+    LaTeXForm(Ex("H{#}"), Ex(r'"\mathcal{H}"'))
+    LaTeXForm(Ex(gamma_name + "{#}"), Ex(r'"\Gamma"'))
+    LaTeXForm(Ex("Phi{#}"), Ex(r'"\Phi"'))
+    LaTeXForm(Ex("BarPhi{#}"), Ex(r'"\bar{\Phi}"'))
+    LaTeXForm(Ex(curvature_name + "{#}"), Ex(r'"\mathfrak{R}"'))
+    LaTeXForm(Ex("PD{#}"), Ex(r'"\partial"'))
+    LaTeXForm(Ex("ExtD{#}"), Ex(r'"\partial"'))
+    PartialDerivative(Ex("PD{#}"), Ex(""))
     Depends(
-        Ex("{H," + gamma_name + ",Phi,BarPhi," + curvature_name + ",Probe}"),
+        Ex("{H," + gamma_name + ",Phi,BarPhi," + curvature_name + "}"),
         Ex("PD{#}"),
     )
-    LaTeXForm(Ex("PD{#}"), Ex(r"\partial"))
     # Keep the actual scope object, not only id(scope): retaining it prevents
     # Python from reusing an old numeric id after repeated notebook resets.
     _CADABRA_PROPERTY_SCOPE = current_scope
@@ -2889,14 +2898,11 @@ def cadabra_body_source(body_key):
     if derivative_order != len(external_derivatives):
         raise ValueError("Derivative order and external derivative tuple disagree")
     pieces = [_cadabra_factor_source(factor) for factor in factors]
-    # Represent the differential operator by its action on one common
-    # arbitrary probe.  This makes every derivative index a genuine contracted
-    # Cadabra index while keeping the operator order explicit and preventing
-    # unrelated rows from being mistaken for sums with different free indices.
-    probe = "Probe"
-    for index in reversed(external_derivatives):
-        probe = f"PD_{{{index}}}{{{probe}}}"
-    pieces.append(probe)
+    # Right-acting ordinary derivatives are tensor factors in the normal-form
+    # operator.  ``ExtD`` keeps their indices genuinely contracted in Cadabra,
+    # while LaTeXForm displays only the paper notation \partial_A and never the
+    # internal implementation name.
+    pieces.extend(f"ExtD_{{{index}}}" for index in external_derivatives)
     return " ".join(pieces) if pieces else "1"
 
 
