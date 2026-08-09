@@ -1,0 +1,10 @@
+"""Cadabra wrapper around the same Python Spin(9) acceptance module.
+
+This checks that the module runs in the Cadabra kernel environment; it is not
+an independent second derivation of the representation characters/projectors.
+"""
+
+import so9_first_massive_spectrum as spectrum
+
+
+spectrum.run_acceptance()
