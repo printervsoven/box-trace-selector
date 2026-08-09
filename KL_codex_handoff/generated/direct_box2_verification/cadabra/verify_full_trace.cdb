@@ -169,6 +169,13 @@ GammaDFT = get_dft_object("Gamma")
 RDFT = get_dft_object("R")
 assert GammaDFT is DFT_GAMMA_DEFINITION
 assert RDFT is DFT_CURVATURE_DEFINITION
+display_probe = Ex("a+b-c+d+e-f+g")
+display_chunks = _cadabra_expression_latex_chunks(
+    display_probe, terms_per_chunk=3
+)
+assert len(display_chunks) == 3
+assert all(len(chunk) < 512 for chunk in display_chunks)
+assert sum(chunk.count(r"\\") for chunk in display_chunks) == 4
 assert GammaDFT.output_head is DFT_GAMMA_HEAD
 assert RDFT.output_head is DFT_CURVATURE_HEAD
 assert DFT_GAMMA_HEAD in RDFT.dependencies

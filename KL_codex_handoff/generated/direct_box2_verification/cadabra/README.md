@@ -162,6 +162,12 @@ head names. External right-acting derivatives are contracted `ExtD` factors
 rendered directly as `\partial_A`, so every Cadabra term remains a scalar
 without displaying an auxiliary probe field.
 
+For direct displays of very long expressions such as `F1;`, the notebook
+display hook splits the additive sum into small continuation blocks before
+handing it to MathJax.  This lets the paper symbols \(\mathcal H\) and
+\(\mathfrak R\) render normally without changing the Cadabra expression or
+any coefficient.
+
 `trace_terms` accepts `T`, `phi`, `BLL`, `BRR`, `UL`, `UR`, `ULLR`, `ULRR`,
 and the four-field representations `B`, `U`, `chi`. Only `n=1` and `n=2` are
 implemented; other values fail explicitly.

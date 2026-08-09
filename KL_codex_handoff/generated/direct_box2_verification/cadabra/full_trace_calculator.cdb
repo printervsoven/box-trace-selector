@@ -2507,6 +2507,85 @@ def _display_latex_chunks(chunks):
         display(Math(chunk))
 
 
+def _cadabra_expression_latex_chunks(expression, terms_per_chunk=12):
+    """Split a large Cadabra sum into independently renderable TeX blocks.
+
+    Classic Jupyter ships MathJax 2 with a small TeX input buffer.  A direct
+    ``F1;`` therefore cannot be handed to it as one roughly 50 KiB formula.
+    The Cadabra expression itself is left untouched: only its additive terms
+    are grouped into continuation displays.
+    """
+    if terms_per_chunk < 1:
+        raise ValueError("terms_per_chunk must be positive")
+    if expression == 0:
+        return ("0",)
+    rendered_terms = tuple(
+        node.ex()._latex_() for node in expression.top().terms()
+    )
+    chunks = []
+    for start in range(0, len(rendered_terms), terms_per_chunk):
+        lines = []
+        for offset, rendered in enumerate(
+            rendered_terms[start : start + terms_per_chunk]
+        ):
+            absolute_index = start + offset
+            if absolute_index == 0:
+                prefix = r"&{}"
+            elif rendered.lstrip().startswith("-"):
+                prefix = r"&\quad{}"
+            else:
+                prefix = r"&\quad{}+{}"
+            lines.append(prefix + rendered)
+        chunks.append(r"\begin{aligned}" + r"\\".join(lines) + r"\end{aligned}")
+    return tuple(chunks)
+
+
+def install_chunked_notebook_display(max_latex_chars=4096, terms_per_chunk=12):
+    """Make a direct long-expression display render in bounded MathJax nodes."""
+    if max_latex_chars < 512:
+        raise ValueError("max_latex_chars must be at least 512")
+    if terms_per_chunk < 1:
+        raise ValueError("terms_per_chunk must be positive")
+    if not _in_ipython() or globals().get("LaTeXString") is None:
+        return False
+
+    native_name = "_BOX_TRACE_NATIVE_CADABRA_DISPLAY"
+    native_display = globals().get(native_name)
+    if native_display is None:
+        native_display = globals().get("display")
+        if not callable(native_display):
+            return False
+        globals()[native_name] = native_display
+    latex_string = globals()["LaTeXString"]
+
+    def box_trace_display(value, cell_id=0, delay_send=False):
+        # Preserve Cadabra's public display signature.  A delayed send is one
+        # indivisible kernel message, so it must remain on the native path.
+        if isinstance(value, Ex) and not delay_send:
+            source = value._latex_()
+            if len(source) > max_latex_chars:
+                for chunk in _cadabra_expression_latex_chunks(
+                    value, terms_per_chunk=terms_per_chunk
+                ):
+                    native_display(
+                        latex_string(chunk),
+                        cell_id=cell_id,
+                        delay_send=False,
+                    )
+                return None
+        return native_display(
+            value,
+            cell_id=cell_id,
+            delay_send=delay_send,
+        )
+
+    globals()["display"] = box_trace_display
+    return True
+
+
+install_chunked_notebook_display()
+
+
 def _trace_latex_chunks(result, terms_per_chunk=20):
     if terms_per_chunk < 1:
         raise ValueError("terms_per_chunk must be positive")
@@ -3240,6 +3319,7 @@ __all__ = [
     "box_definition_latex_chunks",
     "field_box_latex",
     "show_field_boxes",
+    "install_chunked_notebook_display",
     "trace_terms",
     "prepare_field_variables",
     "cadabra_term_count",
