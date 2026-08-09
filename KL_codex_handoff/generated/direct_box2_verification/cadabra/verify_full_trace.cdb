@@ -179,7 +179,7 @@ for required in (
     r"2\left(P\partial_CP\bar P\right)_{[AB]}",
     r"\partial_D d",
     r"\tag{3.7}",
-    r"\Gamma_{Cpq}&\coloneqq\Gamma_{CAB}V^A{}_pV^B{}_q",
+    r"\Gamma_{Cpq}&" + MATHJAX_DEFINITION_RELATION + r"\Gamma_{CAB}V^A{}_pV^B{}_q",
 ):
     assert required in gamma_geometry_source, required
 for required in (
@@ -187,7 +187,7 @@ for required in (
     r"\partial_A\Gamma_B{}^C{}_D",
     r"{}-\partial_B\Gamma_A{}^C{}_D",
     r"\mathfrak R_{ABCD}&=\mathfrak R_{[AB][CD]}",
-    r"\mathfrak R_{AB}&\coloneqq\mathfrak R^C{}_{ACB}",
+    r"\mathfrak R_{AB}&" + MATHJAX_DEFINITION_RELATION + r"\mathfrak R^C{}_{ACB}",
     r"\tag{3.10}",
 ):
     assert required in curvature_geometry_source, required

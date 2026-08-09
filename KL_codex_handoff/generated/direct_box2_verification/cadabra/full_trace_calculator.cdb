@@ -57,6 +57,10 @@ DFT_BAR_PROJECTOR_HEAD = TensorHeadDefinition(
     "bar_projector", "Pbar", r"\bar P"
 )
 DFT_DILATON_HEAD = TensorHeadDefinition("dft_dilaton", "d", r"d")
+# Keep ':' and '=' separate in the Cadabra source.  Its preprocessor treats
+# the contiguous token as Cadabra assignment even when it appears inside a
+# Python string, while the joined output is the MathJax-compatible relation.
+MATHJAX_DEFINITION_RELATION = r"\mathrel{" + ":" + "=}"
 
 
 @dataclass(frozen=True)
@@ -2730,9 +2734,9 @@ def dft_object_latex_chunks(dft_object):
     if dft_object is DFT_GAMMA_DEFINITION:
         projection = (
             r"\begin{aligned}"
-            + rf"{Gamma}_{{Cpq}}&\coloneqq{Gamma}_{{CAB}}V^A{{}}_pV^B{{}}_q,\\"
-            + rf"{Gamma}^C{{}}_{{pq}}&\coloneqq\mathcal J^{{CD}}{Gamma}_{{Dpq}},\\"
-            + rf"{Gamma}_{{C\bar p\bar q}}&\coloneqq{Gamma}_{{CAB}}"
+            + rf"{Gamma}_{{Cpq}}&{MATHJAX_DEFINITION_RELATION}{Gamma}_{{CAB}}V^A{{}}_pV^B{{}}_q,\\"
+            + rf"{Gamma}^C{{}}_{{pq}}&{MATHJAX_DEFINITION_RELATION}\mathcal J^{{CD}}{Gamma}_{{Dpq}},\\"
+            + rf"{Gamma}_{{C\bar p\bar q}}&{MATHJAX_DEFINITION_RELATION}{Gamma}_{{CAB}}"
             + r"\bar V^A{}_{\bar p}\bar V^B{}_{\bar q}."
             + r"\end{aligned}"
         )
@@ -2740,14 +2744,14 @@ def dft_object_latex_chunks(dft_object):
     properties = (
         r"\begin{aligned}"
         + rf"{Riemann}_{{ABCD}}&={Riemann}_{{[AB][CD]}},\\"
-        + rf"{Riemann}_{{AB}}&\coloneqq{Riemann}^C{{}}_{{ACB}},\\"
-        + rf"{Riemann}_{{pqrs}}&\coloneqq V^A{{}}_pV^B{{}}_qV^C{{}}_rV^D{{}}_s"
+        + rf"{Riemann}_{{AB}}&{MATHJAX_DEFINITION_RELATION}{Riemann}^C{{}}_{{ACB}},\\"
+        + rf"{Riemann}_{{pqrs}}&{MATHJAX_DEFINITION_RELATION}V^A{{}}_pV^B{{}}_qV^C{{}}_rV^D{{}}_s"
         + rf"{Riemann}_{{ABCD}}."
         + r"\end{aligned}\tag{3.11}"
     )
     semico = (
         r"\begin{aligned}"
-        r"S_{ABCD}\coloneqq\frac12\left("
+        r"S_{ABCD}" + MATHJAX_DEFINITION_RELATION + r"\frac12\left("
         + rf"{Riemann}_{{ABCD}}+{Riemann}_{{CDAB}}"
         + rf"-{Gamma}^E{{}}_{{AB}}{Gamma}_{{ECD}}\right)."
         + r"\end{aligned}\tag{3.12}"
